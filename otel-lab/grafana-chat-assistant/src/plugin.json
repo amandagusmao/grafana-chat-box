@@ -1,0 +1,44 @@
+{
+  "type": "app",
+  "name": "Grafana Chat Assistant",
+  "id": "grafana-chat-assistant",
+  "category": "plugin",
+  "dependencies": {
+    "grafanaVersion": "8.0.0",
+    "plugins": []
+  },
+  "includes": [
+    {
+      "type": "page",
+      "name": "Chat Assistant",
+      "path": "/a/grafana-chat-assistant/chat",
+      "addToNav": true,
+      "defaultNav": true
+    }
+  ],
+  "info": {
+    "description": "Um assistente de chat para auxiliar na criação de dashboards no Grafana.",
+    "author": {
+      "name": "Amanda Gusmão",
+      "email": "amanda.gusmao@bradesco.com.br"
+    },
+    "keywords": ["chat", "assistant", "dashboard", "grafana"],
+    "links": [
+      {
+        "name": "Website",
+        "url": "https://example.com"
+      },
+      {
+        "name": "License",
+        "url": "https://github.com/grafana/grafana-starter-app-plugin/blob/master/LICENSE"
+      }
+    ],
+    "logos": {
+      "small": "img/logo.svg",
+      "large": "img/logo.svg"
+    },
+    "screenshots": [],
+    "version": "1.0.0",
+    "updated": "2023-10-27"
+  }
+}

@@ -1,0 +1,45 @@
+version: '3.8'
+services:
+  otelcol:
+    image: otel/opentelemetry-collector-contrib:latest
+    volumes:
+      - ./otel-config.yaml:/etc/otelcol/config.yaml:ro
+      - /proc:/host/proc:ro
+      - /sys:/host/sys:ro
+    command: ["--config", "/etc/otelcol/config.yaml"]
+    networks:
+      - otel-net
+
+  prometheus:
+    image: prom/prometheus:latest
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+    networks:
+      - otel-net
+    ports:
+      - "9090:9090"
+
+  grafana:
+    image: grafana/grafana:latest
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - ./grafana-chat-assistant:/var/lib/grafana/plugins/grafana-chat-assistant
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_PLUGINS_ALLOW_LOADING_UNSIGNED_PLUGINS=grafana-chat-assistant
+    depends_on:
+      - prometheus
+    ports:
+      - "3000:3000"
+    networks:
+      - otel-net
+
+networks:
+  otel-net:
+
+volumes:
+  grafana-data:
