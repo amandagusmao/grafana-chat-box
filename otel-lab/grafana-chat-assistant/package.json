@@ -1,12 +1,19 @@
 {
   "name": "grafana-chat-assistant",
-  "version": "1.0.0",
-  "description": "Um assistente de chat para auxiliar na criação de dashboards no Grafana.",
+  "version": "2.0.0",
+  "description": "Um assistente de chat com IA para auxiliar na criação de dashboards no Grafana.",
   "scripts": {
-    "build": "webpack --config webpack.config.js --mode production",
+    "build": "npm run build:frontend && npm run build:backend",
+    "build:frontend": "webpack --config webpack.config.js --mode production",
+    "build:backend": "mage -v buildAll",
+    "build:backend:linux": "mage -v buildLinux",
+    "build:backend:windows": "mage -v buildWindows",
+    "build:backend:darwin": "mage -v buildDarwin",
     "dev": "webpack --config webpack.config.js --mode development --watch",
     "lint": "eslint --ext .ts,.tsx src",
     "lint:fix": "eslint --ext .ts,.tsx src --fix",
+    "test:backend": "go test ./pkg/...",
+    "clean": "mage clean && rm -rf dist/*.js dist/*.js.map dist/*.js.LICENSE.txt",
     "reset-grafana": "npm run build && docker-compose restart grafana",
     "reset-grafana-full": "npm run build && docker-compose down -v && docker-compose up -d --build",
     "status-grafana": "docker exec -it otel-lab-grafana-1 ls -l /var/lib/grafana/plugins"

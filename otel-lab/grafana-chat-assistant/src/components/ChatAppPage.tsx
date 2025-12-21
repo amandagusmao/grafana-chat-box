@@ -1,8 +1,8 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { AppRootProps } from '@grafana/data';
-import { Button, Input, useStyles2 } from '@grafana/ui';
+import { AppRootProps, GrafanaTheme2 } from '@grafana/data';
+import { getBackendSrv } from '@grafana/runtime';
+import { Button, useStyles2 } from '@grafana/ui';
 import { css } from '@emotion/css';
-import { GrafanaTheme2 } from '@grafana/data';
 
 interface Props extends AppRootProps {}
 
@@ -137,22 +137,18 @@ export const ChatAppPage: React.FC<Props> = ({ basename }) => {
     setIsLoading(true);
 
     try {
-      const response = await fetch('http://localhost:4000/api/chat', {
+      // Use Grafana's backend service to call the plugin's resource handler
+      const response = await getBackendSrv().fetch({
+        url: '/api/plugins/grafana-chat-assistant/resources/chat',
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({
+        data: {
           messages: newHistory,
           dashboardContext: dashboardContext
-        })
-      });
-
-      if (!response.ok) {
-        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
-      }
-
-      const data = await response.json();
+        },
+        showSuccessAlert: false,
+        showErrorAlert: false
+      }).toPromise();
+      const data = response?.data as any;
 
       if (data.success) {
         const assistantMessage: Message = {
