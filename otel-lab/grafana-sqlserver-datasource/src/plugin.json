@@ -1,0 +1,28 @@
+{
+  "type": "datasource",
+  "name": "SQL Server (Kafka Schema)",
+  "id": "grafana-sqlserver-datasource",
+  "category": "sql",
+  "executable": "gpx_grafana-sqlserver-datasource",
+  "backend": true,
+  "alerting": false,
+  "info": {
+    "description": "SQL Server datasource plugin for Kafka schema tables with dynamic query builder",
+    "author": {
+      "name": "Amanda Gusmao"
+    },
+    "keywords": ["sqlserver", "mssql", "kafka", "database"],
+    "logos": {
+      "small": "img/logo.svg",
+      "large": "img/logo.svg"
+    },
+    "version": "1.0.0"
+  },
+  "dependencies": {
+    "grafanaDependency": ">=9.0.0",
+    "grafanaVersion": "9.0.0",
+    "plugins": []
+  },
+  "metrics": true,
+  "annotations": false
+}
