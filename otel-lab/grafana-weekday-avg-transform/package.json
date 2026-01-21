@@ -1,0 +1,29 @@
+{
+  "name": "grafana-weekday-avg-transform",
+  "version": "1.0.0",
+  "description": "Grafana transformation plugin that calculates average values grouped by day of week",
+  "scripts": {
+    "build": "webpack --config webpack.config.js --mode production",
+    "dev": "webpack --config webpack.config.js --mode development --watch",
+    "lint": "eslint --ext .ts,.tsx src/",
+    "lint:fix": "eslint --ext .ts,.tsx src/ --fix"
+  },
+  "author": "",
+  "license": "Apache-2.0",
+  "devDependencies": {
+    "@grafana/data": "^10.0.0",
+    "@grafana/ui": "^10.0.0",
+    "@types/node": "^20.0.0",
+    "@types/react": "^18.2.0",
+    "copy-webpack-plugin": "^11.0.0",
+    "ts-loader": "^9.5.1",
+    "typescript": "^5.3.3",
+    "webpack": "^5.89.0",
+    "webpack-cli": "^5.1.4"
+  },
+  "peerDependencies": {
+    "@grafana/data": ">=9.0.0",
+    "@grafana/ui": ">=9.0.0",
+    "react": "^18.0.0"
+  }
+}

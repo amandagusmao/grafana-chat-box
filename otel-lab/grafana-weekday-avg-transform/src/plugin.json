@@ -1,0 +1,21 @@
+{
+  "type": "app",
+  "name": "Média por Séries Temporais",
+  "id": "grafana-weekday-avg-transform",
+  "autoEnabled": true,
+  "preload": true,
+  "info": {
+    "description": "Transformação que calcula a média histórica por dia da semana e horário",
+    "author": {
+      "name": "Amanda Gusmão"
+    },
+    "keywords": ["transform", "transformation", "weekday", "average", "timeseries", "média"],
+    "version": "1.0.0",
+    "updated": "2026-01-21"
+  },
+  "includes": [],
+  "dependencies": {
+    "grafanaDependency": ">=9.0.0",
+    "plugins": []
+  }
+}

@@ -29,9 +29,11 @@ services:
       - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
       - ./grafana-chat-assistant:/var/lib/grafana/plugins/grafana-chat-assistant
       - ./grafana-dashboard-exporter/dist:/var/lib/grafana/plugins/grafana-dashboard-exporter
+      - ./grafana-sqlserver-datasource/dist:/var/lib/grafana/plugins/grafana-sqlserver-datasource
+      - ./grafana-weekday-avg-transform/dist:/var/lib/grafana/plugins/grafana-weekday-avg-transform
     environment:
       - GF_SECURITY_ADMIN_PASSWORD=admin
-      - GF_PLUGINS_ALLOW_LOADING_UNSIGNED_PLUGINS=grafana-chat-assistant,grafana-dashboard-exporter
+      - GF_PLUGINS_ALLOW_LOADING_UNSIGNED_PLUGINS=grafana-chat-assistant,grafana-dashboard-exporter,grafana-sqlserver-datasource,grafana-weekday-avg-transform
     depends_on:
       - prometheus
     ports:
