@@ -22,6 +22,9 @@ export type Granularity = 'minute' | '5min' | '15min' | '30min' | 'hour';
 // Period options (in days)
 export type Period = '15d' | '30d' | '60d' | '90d' | '180d' | '365d' | 'all';
 
+// Calculation type options
+export type CalculationType = 'average' | 'record_max' | 'record_min' | 'median';
+
 // Options interface
 export interface WeekdayAverageTransformOptions {
   granularity: Granularity;
@@ -30,6 +33,8 @@ export interface WeekdayAverageTransformOptions {
   keepOriginal: boolean; // Keep original data
   timeField?: string;
   valueField?: string;
+  sourceSeries?: string; // Selected series to calculate average from (empty = all series)
+  calculationType?: CalculationType; // Type of calculation (average, record, median)
 }
 
 // Default options
@@ -38,6 +43,7 @@ export const defaultOptions: WeekdayAverageTransformOptions = {
   period: '90d',
   seriesName: 'Média',
   keepOriginal: true,
+  calculationType: 'average',
 };
 
 // Period to milliseconds
@@ -53,8 +59,7 @@ const periodToMs: Record<Period, number> = {
 
 // Interface for accumulated values per time slot
 interface TimeSlotAccumulator {
-  sum: number;
-  count: number;
+  values: number[]; // All values for median and record calculations
 }
 
 /**
@@ -108,10 +113,25 @@ function findValueField(frame: DataFrame, preferredName?: string): Field | undef
 
 
 /**
- * Build a map of historical averages by day of week and time slot
+ * Calculate median from an array of numbers
+ */
+function calculateMedian(values: number[]): number {
+  if (values.length === 0) {
+    return 0;
+  }
+  const sorted = [...values].sort((a, b) => a - b);
+  const mid = Math.floor(sorted.length / 2);
+  if (sorted.length % 2 === 0) {
+    return (sorted[mid - 1] + sorted[mid]) / 2;
+  }
+  return sorted[mid];
+}
+
+/**
+ * Build a map of historical values by day of week and time slot
  * Key format: "dayOfWeek-HH:MM" (e.g., "3-15:50" for Wednesday at 15:50)
  */
-function buildHistoricalAveragesMap(
+function buildHistoricalValuesMap(
   timeField: Field,
   valueField: Field,
   options: WeekdayAverageTransformOptions
@@ -119,6 +139,7 @@ function buildHistoricalAveragesMap(
   const now = Date.now();
   const periodMs = periodToMs[options.period];
   const cutoffDate = periodMs === Infinity ? 0 : now - periodMs;
+  const calculationType = options.calculationType || 'average';
 
   // Accumulate values by day of week + time slot
   const accumulators: Map<string, TimeSlotAccumulator> = new Map();
@@ -142,37 +163,69 @@ function buildHistoricalAveragesMap(
     const timeSlot = getTimeSlotKey(date, options.granularity);
     const key = `${dayOfWeek}-${timeSlot}`;
 
-    const existing = accumulators.get(key) || { sum: 0, count: 0 };
-    existing.sum += value;
-    existing.count += 1;
+    const existing = accumulators.get(key) || { values: [] };
+    existing.values.push(value);
     accumulators.set(key, existing);
   }
 
-  // Convert to averages
-  const averagesMap: Map<string, number> = new Map();
+  // Calculate result based on calculation type
+  const resultMap: Map<string, number> = new Map();
   for (const [key, acc] of accumulators.entries()) {
-    if (acc.count > 0) {
-      averagesMap.set(key, acc.sum / acc.count);
+    if (acc.values.length > 0) {
+      let result: number;
+      switch (calculationType) {
+        case 'record_max':
+          result = Math.max(...acc.values);
+          break;
+        case 'record_min':
+          result = Math.min(...acc.values);
+          break;
+        case 'median':
+          result = calculateMedian(acc.values);
+          break;
+        case 'average':
+        default:
+          result = acc.values.reduce((sum, v) => sum + v, 0) / acc.values.length;
+          break;
+      }
+      resultMap.set(key, result);
     }
   }
 
-  return averagesMap;
+  return resultMap;
 }
 
 /**
- * Calculate average series that follows the original data timestamps
- * Returns ONE series with the historical average for each timestamp's day of week and time slot
+ * Get default series name based on calculation type
  */
-function calculateWeekdayTimeAverages(
+function getDefaultSeriesName(calculationType: CalculationType): string {
+  switch (calculationType) {
+    case 'record_max':
+      return 'Recorde (Máximo)';
+    case 'record_min':
+      return 'Recorde (Mínimo)';
+    case 'median':
+      return 'Mediana';
+    case 'average':
+    default:
+      return 'Média';
+  }
+}
+
+/**
+ * Calculate series that follows the original data timestamps
+ * Returns ONE series with the calculated value for each timestamp's day of week and time slot
+ */
+function calculateWeekdayTimeSeries(
   timeField: Field,
   valueField: Field,
   options: WeekdayAverageTransformOptions,
-  averagesMap: Map<string, number>
+  valuesMap: Map<string, number>
 ): DataFrame {
   const timestamps: number[] = [];
-  const averageValues: number[] = [];
+  const calculatedValues: number[] = [];
 
-  // Generate one average value for each unique timestamp in the current view
+  // Generate one value for each unique timestamp in the current view
   const seenTimestamps = new Set<number>();
 
   for (let i = 0; i < timeField.values.length; i++) {
@@ -188,16 +241,17 @@ function calculateWeekdayTimeAverages(
     const dayOfWeek = date.getDay();
     const timeSlot = getTimeSlotKey(date, options.granularity);
     const key = `${dayOfWeek}-${timeSlot}`;
-    const avgValue = averagesMap.get(key);
+    const calcValue = valuesMap.get(key);
 
-    if (avgValue !== undefined) {
+    if (calcValue !== undefined) {
       timestamps.push(timestamp);
-      averageValues.push(avgValue);
+      calculatedValues.push(calcValue);
     }
   }
 
-  // Use the custom series name directly
-  const seriesName = options.seriesName || 'Média Histórica';
+  // Use the custom series name or default based on calculation type
+  const calculationType = options.calculationType || 'average';
+  const seriesName = options.seriesName || getDefaultSeriesName(calculationType);
 
   // Create result frame
   const resultFrame = new MutableDataFrame({
@@ -214,7 +268,7 @@ function calculateWeekdayTimeAverages(
       {
         name: seriesName,
         type: FieldType.number,
-        values: averageValues,
+        values: calculatedValues,
         config: {
           displayName: seriesName,
           unit: valueField.config?.unit,
@@ -225,6 +279,26 @@ function calculateWeekdayTimeAverages(
   });
 
   return resultFrame;
+}
+
+/**
+ * Get the display name of a data frame (series name)
+ */
+export function getFrameDisplayName(frame: DataFrame): string {
+  // Try to get name from frame
+  if (frame.name) {
+    return frame.name;
+  }
+  // Try to get from refId
+  if (frame.refId) {
+    return frame.refId;
+  }
+  // Try to get from the first value field
+  const valueField = frame.fields.find((f) => f.type === FieldType.number);
+  if (valueField) {
+    return getFieldDisplayName(valueField, frame);
+  }
+  return 'Unknown';
 }
 
 /**
@@ -248,7 +322,12 @@ function transformData(data: DataFrame[], options: WeekdayAverageTransformOption
     results.push(...data);
   }
 
-  for (const frame of data) {
+  // Filter frames by selected source series (if specified)
+  const framesToProcess = opts.sourceSeries
+    ? data.filter((frame) => getFrameDisplayName(frame) === opts.sourceSeries)
+    : data;
+
+  for (const frame of framesToProcess) {
     const timeField = findTimeField(frame, opts.timeField);
     const valueField = findValueField(frame, opts.valueField);
 
@@ -256,15 +335,15 @@ function transformData(data: DataFrame[], options: WeekdayAverageTransformOption
       continue;
     }
 
-    // Build historical averages map once per frame
-    const averagesMap = buildHistoricalAveragesMap(timeField, valueField, opts);
+    // Build historical values map once per frame
+    const valuesMap = buildHistoricalValuesMap(timeField, valueField, opts);
 
-    // Calculate averages (automatically matches each timestamp's day of week)
-    const resultFrame = calculateWeekdayTimeAverages(
+    // Calculate series (automatically matches each timestamp's day of week)
+    const resultFrame = calculateWeekdayTimeSeries(
       timeField,
       valueField,
       opts,
-      averagesMap
+      valuesMap
     );
 
     // Only add if we have data
@@ -281,8 +360,8 @@ function transformData(data: DataFrame[], options: WeekdayAverageTransformOption
  */
 const weekdayAverageTransformer: DataTransformerInfo<WeekdayAverageTransformOptions> = {
   id: weekdayAverageTransformId,
-  name: 'Média por Séries Temporais',
-  description: 'Calcula a média histórica para cada horário baseado no mesmo dia da semana. Compare dados atuais com tendências históricas.',
+  name: 'Cálculos por Séries Temporais',
+  description: 'Calcula média, mediana ou recorde histórico para cada horário baseado no mesmo dia da semana. Compare dados atuais com tendências históricas.',
   defaultOptions,
 
   operator: (options: WeekdayAverageTransformOptions) => (source) =>
