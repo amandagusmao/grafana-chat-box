@@ -5,7 +5,6 @@ go 1.21
 require (
 	github.com/grafana/grafana-plugin-sdk-go v0.199.0
 	github.com/magefile/mage v1.15.0
-	github.com/sashabaranov/go-openai v1.17.9
 )
 
 require (

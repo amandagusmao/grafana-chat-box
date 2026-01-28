@@ -1,25 +1,62 @@
 receivers:
   hostmetrics:
-    collection_interval: 15s
+    collection_interval: 10s
+    root_path: /host
     scrapers:
-      cpu: {}
-      memory: {}
+      cpu:
+        metrics:
+          system.cpu.utilization:
+            enabled: true
+      memory:
+        metrics:
+          system.memory.utilization:
+            enabled: true
       disk: {}
-      filesystem: {}
+      filesystem:
+        metrics:
+          system.filesystem.utilization:
+            enabled: true
       load: {}
       network: {}
       processes: {}
+      paging: {}
+
+  # Prometheus scraper para coletar métricas de outros serviços
+  prometheus:
+    config:
+      scrape_configs:
+        - job_name: 'prometheus'
+          scrape_interval: 10s
+          static_configs:
+            - targets: ['prometheus:9090']
 
 processors:
   batch:
+    timeout: 5s
+    send_batch_size: 1000
+
+  # Adiciona atributos de resource
+  resource:
+    attributes:
+      - key: host.name
+        value: "otel-lab-host"
+        action: upsert
+      - key: service.name
+        value: "infrastructure"
+        action: upsert
 
 exporters:
   prometheus:
     endpoint: "0.0.0.0:8889"
+    namespace: ""
+    send_timestamps: true
+    metric_expiration: 5m
+    resource_to_telemetry_conversion:
+      enabled: true
 
 service:
   pipelines:
     metrics:
-      receivers: [hostmetrics]
-      processors: [batch]
+      receivers: [hostmetrics, prometheus]
+      processors: [batch, resource]
       exporters: [prometheus]

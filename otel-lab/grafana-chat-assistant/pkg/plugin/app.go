@@ -18,11 +18,16 @@ type App struct {
 
 // AppSettings contains the plugin settings from Grafana
 type AppSettings struct {
-	OpenAIAPIKey string `json:"openaiApiKey"`
-	GrafanaURL   string `json:"grafanaUrl"`
-	GrafanaToken string `json:"grafanaToken"`
-	AIEndpoint   string `json:"aiEndpoint"`
-	AIModel      string `json:"aiModel"`
+	Identificador string `json:"identificador"`
+	Senha         string `json:"senha"`
+	GrafanaURL    string `json:"grafanaUrl"`
+	GrafanaToken  string `json:"grafanaToken"`
+	AIEndpoint    string `json:"aiEndpoint"`
+	AIModel       string `json:"aiModel"`
+	// Default datasources configuration
+	DefaultPrometheusUID string `json:"defaultPrometheusUid"`
+	DefaultLokiUID       string `json:"defaultLokiUid"`
+	DefaultTempoUID      string `json:"defaultTempoUid"`
 }
 
 // NewApp creates a new App instance
@@ -36,9 +41,12 @@ func NewApp(ctx context.Context, settings backend.AppInstanceSettings) (instance
 		}
 	}
 
-	// Get secure settings (API keys)
-	if apiKey, exists := settings.DecryptedSecureJSONData["openaiApiKey"]; exists {
-		appSettings.OpenAIAPIKey = apiKey
+	// Get secure settings (credentials)
+	if identificador, exists := settings.DecryptedSecureJSONData["identificador"]; exists {
+		appSettings.Identificador = identificador
+	}
+	if senha, exists := settings.DecryptedSecureJSONData["senha"]; exists {
+		appSettings.Senha = senha
 	}
 	if token, exists := settings.DecryptedSecureJSONData["grafanaToken"]; exists {
 		appSettings.GrafanaToken = token
@@ -46,14 +54,24 @@ func NewApp(ctx context.Context, settings backend.AppInstanceSettings) (instance
 
 	app := &App{}
 
+	// Create AuthService once (singleton for token caching)
+	var authService *AuthService
+	if appSettings.AIEndpoint != "" && appSettings.Identificador != "" && appSettings.Senha != "" {
+		authService = NewAuthService(appSettings.AIEndpoint, appSettings.Identificador, appSettings.Senha)
+		log.DefaultLogger.Info("AuthService initialized")
+	}
+
 	// Create HTTP router for resource calls
 	mux := http.NewServeMux()
 
 	// Register routes
 	mux.HandleFunc("/chat", func(w http.ResponseWriter, r *http.Request) {
-		handleChat(w, r, appSettings)
+		handleChat(w, r, appSettings, authService)
 	})
 	mux.HandleFunc("/health", handleHealth)
+	mux.HandleFunc("/datasources", func(w http.ResponseWriter, r *http.Request) {
+		handleListDatasources(w, r, appSettings)
+	})
 
 	app.CallResourceHandler = httpadapter.New(mux)
 

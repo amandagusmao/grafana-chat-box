@@ -4,9 +4,18 @@ services:
     image: otel/opentelemetry-collector-contrib:latest
     volumes:
       - ./otel-config.yaml:/etc/otelcol/config.yaml:ro
-      - /proc:/host/proc:ro
-      - /sys:/host/sys:ro
+      - /:/host:ro
+    environment:
+      - HOST_PROC=/host/proc
+      - HOST_SYS=/host/sys
+      - HOST_ETC=/host/etc
+      - HOST_VAR=/host/var
+      - HOST_RUN=/host/run
+      - HOST_DEV=/host/dev
     command: ["--config", "/etc/otelcol/config.yaml"]
+    ports:
+      - "8889:8889"
+      - "8888:8888"
     networks:
       - otel-net
 
@@ -27,7 +36,7 @@ services:
       - grafana-data:/var/lib/grafana
       - ./grafana/provisioning:/etc/grafana/provisioning:ro
       - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
-      - ./grafana-chat-assistant:/var/lib/grafana/plugins/grafana-chat-assistant
+      - ./grafana-chat-assistant/dist:/var/lib/grafana/plugins/grafana-chat-assistant
       - ./grafana-dashboard-exporter/dist:/var/lib/grafana/plugins/grafana-dashboard-exporter
       - ./grafana-sqlserver-datasource/dist:/var/lib/grafana/plugins/grafana-sqlserver-datasource
       - ./grafana-weekday-avg-transform/dist:/var/lib/grafana/plugins/grafana-weekday-avg-transform

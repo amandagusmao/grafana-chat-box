@@ -1,26 +1,44 @@
 import React, { useState, useEffect } from 'react';
-import { AppRootProps, GrafanaTheme2 } from '@grafana/data';
+import { AppRootProps, GrafanaTheme2, SelectableValue } from '@grafana/data';
 import { getBackendSrv } from '@grafana/runtime';
-import { Button, Input, Field, FieldSet, SecretInput, Alert, useStyles2 } from '@grafana/ui';
+import { Button, Input, Field, FieldSet, SecretInput, Alert, useStyles2, Select } from '@grafana/ui';
 import { css } from '@emotion/css';
 
 interface Props extends AppRootProps {}
+
+interface DatasourceInfo {
+  uid: string;
+  name: string;
+  type: string;
+  isDefault: boolean;
+}
+
+interface DatasourcesResponse {
+  prometheus: DatasourceInfo[];
+  loki: DatasourceInfo[];
+  tempo: DatasourceInfo[];
+  other: DatasourceInfo[];
+}
 
 interface PluginSettings {
   jsonData: {
     grafanaUrl?: string;
     aiEndpoint?: string;
     aiModel?: string;
+    defaultPrometheusUid?: string;
+    defaultLokiUid?: string;
+    defaultTempoUid?: string;
   };
   secureJsonFields: {
-    openaiApiKey?: boolean;
+    identificador?: boolean;
+    senha?: boolean;
     grafanaToken?: boolean;
   };
 }
 
 const getStyles = (theme: GrafanaTheme2) => ({
   container: css`
-    max-width: 600px;
+    max-width: 700px;
     padding: ${theme.spacing(3)};
   `,
   header: css`
@@ -37,24 +55,50 @@ const getStyles = (theme: GrafanaTheme2) => ({
   alert: css`
     margin-bottom: ${theme.spacing(2)};
   `,
+  infoText: css`
+    font-size: ${theme.typography.bodySmall.fontSize};
+    color: ${theme.colors.text.secondary};
+    margin-top: ${theme.spacing(0.5)};
+  `,
+  selectContainer: css`
+    display: flex;
+    flex-direction: column;
+    gap: ${theme.spacing(1)};
+  `,
 });
 
 export const ConfigPage: React.FC<Props> = () => {
   const styles = useStyles2(getStyles);
   const [settings, setSettings] = useState<PluginSettings | null>(null);
   const [grafanaUrl, setGrafanaUrl] = useState('');
-  const [openaiApiKey, setOpenaiApiKey] = useState('');
+  const [identificador, setIdentificador] = useState('');
+  const [senha, setSenha] = useState('');
   const [grafanaToken, setGrafanaToken] = useState('');
   const [aiEndpoint, setAiEndpoint] = useState('');
   const [aiModel, setAiModel] = useState('');
-  const [isOpenaiKeySet, setIsOpenaiKeySet] = useState(false);
+  const [isIdentificadorSet, setIsIdentificadorSet] = useState(false);
+  const [isSenhaSet, setIsSenhaSet] = useState(false);
   const [isGrafanaTokenSet, setIsGrafanaTokenSet] = useState(false);
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
 
+  // Datasource configuration
+  const [datasources, setDatasources] = useState<DatasourcesResponse | null>(null);
+  const [loadingDatasources, setLoadingDatasources] = useState(false);
+  const [defaultPrometheusUid, setDefaultPrometheusUid] = useState<string>('');
+  const [defaultLokiUid, setDefaultLokiUid] = useState<string>('');
+  const [defaultTempoUid, setDefaultTempoUid] = useState<string>('');
+
   useEffect(() => {
     loadSettings();
   }, []);
+
+  useEffect(() => {
+    // Load datasources when grafana token is configured
+    if (isGrafanaTokenSet || grafanaToken) {
+      loadDatasources();
+    }
+  }, [isGrafanaTokenSet]);
 
   const loadSettings = async () => {
     try {
@@ -63,11 +107,32 @@ export const ConfigPage: React.FC<Props> = () => {
       setGrafanaUrl(response.jsonData?.grafanaUrl || window.location.origin);
       setAiEndpoint(response.jsonData?.aiEndpoint || '');
       setAiModel(response.jsonData?.aiModel || '');
-      setIsOpenaiKeySet(response.secureJsonFields?.openaiApiKey || false);
+      setDefaultPrometheusUid(response.jsonData?.defaultPrometheusUid || '');
+      setDefaultLokiUid(response.jsonData?.defaultLokiUid || '');
+      setDefaultTempoUid(response.jsonData?.defaultTempoUid || '');
+      setIsIdentificadorSet(response.secureJsonFields?.identificador || false);
+      setIsSenhaSet(response.secureJsonFields?.senha || false);
       setIsGrafanaTokenSet(response.secureJsonFields?.grafanaToken || false);
+
+      // Load datasources if token is configured
+      if (response.secureJsonFields?.grafanaToken) {
+        loadDatasources();
+      }
     } catch (error) {
       console.error('Failed to load settings:', error);
       setGrafanaUrl(window.location.origin);
+    }
+  };
+
+  const loadDatasources = async () => {
+    setLoadingDatasources(true);
+    try {
+      const response = await getBackendSrv().get('/api/plugins/grafana-chat-assistant/resources/datasources');
+      setDatasources(response);
+    } catch (error) {
+      console.error('Failed to load datasources:', error);
+    } finally {
+      setLoadingDatasources(false);
     }
   };
 
@@ -83,13 +148,19 @@ export const ConfigPage: React.FC<Props> = () => {
           grafanaUrl: grafanaUrl || window.location.origin,
           aiEndpoint: aiEndpoint || '',
           aiModel: aiModel || '',
+          defaultPrometheusUid: defaultPrometheusUid || '',
+          defaultLokiUid: defaultLokiUid || '',
+          defaultTempoUid: defaultTempoUid || '',
         },
         secureJsonData: {},
       };
 
-      // Only send API keys if they were changed
-      if (openaiApiKey) {
-        payload.secureJsonData.openaiApiKey = openaiApiKey;
+      // Only send credentials if they were changed
+      if (identificador) {
+        payload.secureJsonData.identificador = identificador;
+      }
+      if (senha) {
+        payload.secureJsonData.senha = senha;
       }
       if (grafanaToken) {
         payload.secureJsonData.grafanaToken = grafanaToken;
@@ -98,7 +169,8 @@ export const ConfigPage: React.FC<Props> = () => {
       await getBackendSrv().post('/api/plugins/grafana-chat-assistant/settings', payload);
 
       setMessage({ type: 'success', text: 'Configurações salvas com sucesso!' });
-      setOpenaiApiKey('');
+      setIdentificador('');
+      setSenha('');
       setGrafanaToken('');
       loadSettings();
     } catch (error: any) {
@@ -109,15 +181,42 @@ export const ConfigPage: React.FC<Props> = () => {
     }
   };
 
-  const resetOpenaiKey = () => {
-    setIsOpenaiKeySet(false);
-    setOpenaiApiKey('');
+  const resetIdentificador = () => {
+    setIsIdentificadorSet(false);
+    setIdentificador('');
+  };
+
+  const resetSenha = () => {
+    setIsSenhaSet(false);
+    setSenha('');
   };
 
   const resetGrafanaToken = () => {
     setIsGrafanaTokenSet(false);
     setGrafanaToken('');
   };
+
+  // Convert datasources to SelectableValue format
+  const datasourceToOptions = (dsList: DatasourceInfo[] | undefined): Array<SelectableValue<string>> => {
+    if (!dsList || dsList.length === 0) {
+      return [];
+    }
+    const options: Array<SelectableValue<string>> = [
+      { label: '-- Nenhum selecionado --', value: '' }
+    ];
+    dsList.forEach(ds => {
+      options.push({
+        label: ds.isDefault ? `${ds.name} (Grafana Default)` : ds.name,
+        value: ds.uid,
+        description: `UID: ${ds.uid}`,
+      });
+    });
+    return options;
+  };
+
+  const prometheusOptions = datasourceToOptions(datasources?.prometheus);
+  const lokiOptions = datasourceToOptions(datasources?.loki);
+  const tempoOptions = datasourceToOptions(datasources?.tempo);
 
   return (
     <div className={styles.container}>
@@ -136,37 +235,55 @@ export const ConfigPage: React.FC<Props> = () => {
         </Alert>
       )}
 
-      <FieldSet label="Configurações de IA" className={styles.fieldSet}>
+      <FieldSet label="Credenciais de Autenticação" className={styles.fieldSet}>
         <Field
-          label="API Key"
-          description="Sua chave de API do provedor de IA (OpenAI, Azure, ou compatível)"
+          label="Identificador"
+          description="Identificador para autenticação no serviço de IA"
           required
         >
           <SecretInput
             width={40}
-            value={openaiApiKey}
-            isConfigured={isOpenaiKeySet}
-            placeholder="sk-..."
-            onChange={(e) => setOpenaiApiKey(e.currentTarget.value)}
-            onReset={resetOpenaiKey}
+            value={identificador}
+            isConfigured={isIdentificadorSet}
+            placeholder="seu-identificador"
+            onChange={(e) => setIdentificador(e.currentTarget.value)}
+            onReset={resetIdentificador}
           />
         </Field>
 
         <Field
+          label="Senha"
+          description="Senha para autenticação no serviço de IA"
+          required
+        >
+          <SecretInput
+            width={40}
+            value={senha}
+            isConfigured={isSenhaSet}
+            placeholder="sua-senha"
+            onChange={(e) => setSenha(e.currentTarget.value)}
+            onReset={resetSenha}
+          />
+        </Field>
+      </FieldSet>
+
+      <FieldSet label="Configurações da API" className={styles.fieldSet}>
+        <Field
           label="Endpoint da API"
-          description="URL base da API (deixe em branco para usar OpenAI padrão). Ex: https://api.openai.com/v1 ou endpoint Azure/custom"
+          description="URL base da API de IA. Ex: http://host.docker.internal:4000"
+          required
         >
           <Input
             width={40}
             value={aiEndpoint}
-            placeholder="https://api.openai.com/v1"
+            placeholder="http://host.docker.internal:4000"
             onChange={(e) => setAiEndpoint(e.currentTarget.value)}
           />
         </Field>
 
         <Field
           label="Modelo"
-          description="Nome do modelo a ser utilizado. Ex: gpt-4o-mini, gpt-4, claude-3-sonnet, etc."
+          description="Nome do modelo a ser utilizado (opcional)"
         >
           <Input
             width={40}
@@ -177,7 +294,7 @@ export const ConfigPage: React.FC<Props> = () => {
         </Field>
       </FieldSet>
 
-      <FieldSet label="Grafana API (Opcional)" className={styles.fieldSet}>
+      <FieldSet label="Grafana API" className={styles.fieldSet}>
         <Field
           label="URL do Grafana"
           description="URL da instância Grafana para criar dashboards. Deixe em branco para usar a URL atual."
@@ -192,7 +309,7 @@ export const ConfigPage: React.FC<Props> = () => {
 
         <Field
           label="Service Account Token"
-          description="Token de uma Service Account com permissão para criar dashboards. Necessário apenas para criação automática de dashboards."
+          description="Token de uma Service Account com permissão para criar dashboards. Necessário para criação de dashboards e configuração de datasources padrão."
         >
           <SecretInput
             width={40}
@@ -203,7 +320,76 @@ export const ConfigPage: React.FC<Props> = () => {
             onReset={resetGrafanaToken}
           />
         </Field>
+
+        {isGrafanaTokenSet && (
+          <div style={{ marginTop: '8px' }}>
+            <Button variant="secondary" size="sm" onClick={loadDatasources} disabled={loadingDatasources}>
+              {loadingDatasources ? 'Carregando...' : 'Recarregar Datasources'}
+            </Button>
+          </div>
+        )}
       </FieldSet>
+
+      {(isGrafanaTokenSet || datasources) && (
+        <FieldSet label="Datasources Padrão para o Chat" className={styles.fieldSet}>
+          <p className={styles.infoText}>
+            Selecione os datasources padrão que o chat usará ao criar dashboards.
+            Se o usuário não especificar qual datasource usar, estes serão utilizados automaticamente.
+            O usuário ainda poderá solicitar outros datasources explicitamente.
+          </p>
+
+          <Field
+            label="Prometheus Padrão"
+            description={datasources?.prometheus?.length
+              ? `${datasources.prometheus.length} datasource(s) Prometheus disponível(is)`
+              : 'Nenhum datasource Prometheus encontrado'}
+          >
+            <Select
+              options={prometheusOptions}
+              value={defaultPrometheusUid}
+              onChange={(v) => setDefaultPrometheusUid(v?.value || '')}
+              placeholder="Selecione o Prometheus padrão"
+              isClearable
+              isLoading={loadingDatasources}
+              width={40}
+            />
+          </Field>
+
+          <Field
+            label="Loki Padrão"
+            description={datasources?.loki?.length
+              ? `${datasources.loki.length} datasource(s) Loki disponível(is)`
+              : 'Nenhum datasource Loki encontrado'}
+          >
+            <Select
+              options={lokiOptions}
+              value={defaultLokiUid}
+              onChange={(v) => setDefaultLokiUid(v?.value || '')}
+              placeholder="Selecione o Loki padrão"
+              isClearable
+              isLoading={loadingDatasources}
+              width={40}
+            />
+          </Field>
+
+          <Field
+            label="Tempo Padrão"
+            description={datasources?.tempo?.length
+              ? `${datasources.tempo.length} datasource(s) Tempo disponível(is)`
+              : 'Nenhum datasource Tempo encontrado'}
+          >
+            <Select
+              options={tempoOptions}
+              value={defaultTempoUid}
+              onChange={(v) => setDefaultTempoUid(v?.value || '')}
+              placeholder="Selecione o Tempo padrão"
+              isClearable
+              isLoading={loadingDatasources}
+              width={40}
+            />
+          </Field>
+        </FieldSet>
+      )}
 
       <div className={styles.buttonContainer}>
         <Button onClick={saveSettings} disabled={saving}>
