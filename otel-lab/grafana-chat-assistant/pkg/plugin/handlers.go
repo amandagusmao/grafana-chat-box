@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/grafana/grafana-plugin-sdk-go/backend/log"
 )
@@ -64,6 +65,16 @@ func handleListDatasources(w http.ResponseWriter, r *http.Request, settings AppS
 		return
 	}
 
+	// SECURITY: Require authenticated user
+	loggedUser := getLoggedUser(r)
+	if loggedUser.Login == "" && loggedUser.Email == "" {
+		w.WriteHeader(http.StatusUnauthorized)
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"error": "Autenticação necessária.",
+		})
+		return
+	}
+
 	// Check if Grafana settings are configured
 	if settings.GrafanaURL == "" || settings.GrafanaToken == "" {
 		json.NewEncoder(w).Encode(map[string]interface{}{
@@ -81,7 +92,7 @@ func handleListDatasources(w http.ResponseWriter, r *http.Request, settings AppS
 		log.DefaultLogger.Error("Failed to get datasources", "error", err)
 		w.WriteHeader(http.StatusInternalServerError)
 		json.NewEncoder(w).Encode(map[string]interface{}{
-			"error": "Failed to get datasources: " + err.Error(),
+			"error": "Não foi possível obter os datasources. Verifique as configurações do plugin.",
 		})
 		return
 	}
@@ -121,7 +132,7 @@ type LoggedUser struct {
 func getLoggedUser(r *http.Request) *LoggedUser {
 	user := &LoggedUser{}
 
-	// Grafana sends user info in X-Grafana-Id header as a JWT
+	// Try X-Grafana-Id header (JWT) first
 	grafanaID := r.Header.Get("X-Grafana-Id")
 	if grafanaID != "" {
 		// Decode JWT payload (second part)
@@ -145,16 +156,34 @@ func getLoggedUser(r *http.Request) *LoggedUser {
 				var claims struct {
 					Email    string `json:"email"`
 					Username string `json:"username"`
+					Login    string `json:"login"`
+					Sub      string `json:"sub"`
 					Name     string `json:"name"`
 					Role     string `json:"role"`
 				}
 				if err := json.Unmarshal(decoded, &claims); err == nil {
-					user.Login = claims.Username
 					user.Email = claims.Email
 					user.Role = claims.Role
-					log.DefaultLogger.Info("Decoded user from JWT", "login", user.Login, "email", user.Email, "role", user.Role)
+					// Try multiple fields for login
+					if claims.Username != "" {
+						user.Login = claims.Username
+					} else if claims.Login != "" {
+						user.Login = claims.Login
+					} else if claims.Sub != "" {
+						user.Login = claims.Sub
+					}
+					log.DefaultLogger.Info("Decoded user from JWT",
+						"login", user.Login, "email", user.Email, "role", user.Role)
 				}
 			}
+		}
+	}
+
+	// Fallback: try standard Grafana plugin headers
+	if user.Login == "" {
+		if login := r.Header.Get("X-Grafana-User"); login != "" {
+			user.Login = login
+			log.DefaultLogger.Info("Got user from X-Grafana-User header", "login", login)
 		}
 	}
 
@@ -167,7 +196,7 @@ func handleChat(w http.ResponseWriter, r *http.Request, settings AppSettings, au
 
 	// Capture logged user from headers
 	loggedUser := getLoggedUser(r)
-	log.DefaultLogger.Info("Request from user", "login", loggedUser.Login, "email", loggedUser.Email, "role", loggedUser.Role)
+	log.DefaultLogger.Info("Request from user (from headers)", "login", loggedUser.Login, "email", loggedUser.Email, "role", loggedUser.Role)
 
 	// SECURITY: Require authenticated user for all operations
 	if loggedUser.Login == "" && loggedUser.Email == "" {
@@ -180,6 +209,36 @@ func handleChat(w http.ResponseWriter, r *http.Request, settings AppSettings, au
 		return
 	}
 
+	// SECURITY: Verify user role via Grafana API (don't trust headers alone)
+	if settings.GrafanaURL != "" && settings.GrafanaToken != "" {
+		discoveryForAuth := NewDiscoveryService(settings.GrafanaURL, settings.GrafanaToken)
+
+		// Try to verify by login first, then by email
+		lookupKey := loggedUser.Login
+		if lookupKey == "" {
+			lookupKey = loggedUser.Email
+		}
+
+		if lookupKey != "" {
+			verified, err := discoveryForAuth.VerifyUserRole(lookupKey)
+			if err != nil {
+				log.DefaultLogger.Warn("Could not verify user role via API, using header value",
+					"user", lookupKey, "headerRole", loggedUser.Role, "error", err)
+			} else {
+				// Override with verified data from API
+				loggedUser.Role = verified.Role
+				if loggedUser.Login == "" {
+					loggedUser.Login = verified.Login
+				}
+				if loggedUser.Email == "" {
+					loggedUser.Email = verified.Email
+				}
+				log.DefaultLogger.Info("User role verified via API",
+					"login", loggedUser.Login, "email", loggedUser.Email, "role", loggedUser.Role)
+			}
+		}
+	}
+
 	if r.Method != http.MethodPost {
 		w.WriteHeader(http.StatusMethodNotAllowed)
 		json.NewEncoder(w).Encode(ChatResponse{
@@ -189,14 +248,16 @@ func handleChat(w http.ResponseWriter, r *http.Request, settings AppSettings, au
 		return
 	}
 
-	// Read request body
+	// Read request body with size limit to prevent memory exhaustion (100KB max)
+	const maxBodySize = 100 * 1024
+	r.Body = http.MaxBytesReader(w, r.Body, maxBodySize)
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
-		log.DefaultLogger.Error("Failed to read request body", "error", err)
+		log.DefaultLogger.Warn("Failed to read request body", "error", err)
 		w.WriteHeader(http.StatusBadRequest)
 		json.NewEncoder(w).Encode(ChatResponse{
 			Success: false,
-			Error:   "Failed to read request body",
+			Error:   "Requisição muito grande. O tamanho máximo permitido é 100KB.",
 		})
 		return
 	}
@@ -212,6 +273,29 @@ func handleChat(w http.ResponseWriter, r *http.Request, settings AppSettings, au
 			Error:   "Invalid request format",
 		})
 		return
+	}
+
+	// INPUT VALIDATION: message length and count limits
+	const maxMessageLength = 2000
+	const maxMessagesInHistory = 30
+
+	if len(chatReq.Messages) > 0 {
+		lastMsg := chatReq.Messages[len(chatReq.Messages)-1]
+		if len(lastMsg.Content) > maxMessageLength {
+			w.WriteHeader(http.StatusBadRequest)
+			json.NewEncoder(w).Encode(ChatResponse{
+				Success: false,
+				Error:   fmt.Sprintf("Mensagem muito longa. Máximo permitido: %d caracteres.", maxMessageLength),
+			})
+			return
+		}
+	}
+
+	// Truncate history to avoid token overflow — keep system-relevant messages
+	if len(chatReq.Messages) > maxMessagesInHistory {
+		chatReq.Messages = chatReq.Messages[len(chatReq.Messages)-maxMessagesInHistory:]
+		log.DefaultLogger.Info("Conversation history truncated",
+			"kept", maxMessagesInHistory, "user", loggedUser.Login)
 	}
 
 	// Validate authService
@@ -232,7 +316,7 @@ func handleChat(w http.ResponseWriter, r *http.Request, settings AppSettings, au
 		w.WriteHeader(http.StatusInternalServerError)
 		json.NewEncoder(w).Encode(ChatResponse{
 			Success: false,
-			Error:   "Falha na autenticação: " + err.Error(),
+			Error:   "Falha na autenticação com o serviço de IA. Verifique as configurações do plugin.",
 		})
 		return
 	}
@@ -264,7 +348,7 @@ func handleChat(w http.ResponseWriter, r *http.Request, settings AppSettings, au
 		w.WriteHeader(http.StatusInternalServerError)
 		json.NewEncoder(w).Encode(ChatResponse{
 			Success: false,
-			Error:   "Failed to process chat: " + err.Error(),
+			Error:   "Não foi possível processar sua mensagem. Tente novamente em alguns instantes.",
 		})
 		return
 	}
@@ -300,7 +384,7 @@ func handleToolCall(
 	log.DefaultLogger.Info("Processing tool call", "function", funcName)
 
 	// Check if Grafana is configured for tools that need it
-	grafanaRequired := []string{"search_metrics", "list_datasources", "search_loki_labels", "search_tempo_services", "get_user_permissions", "search_user", "search_dashboards", "get_my_dashboards", "create_dashboard"}
+	grafanaRequired := []string{"search_metrics", "list_datasources", "search_loki_labels", "search_tempo_services", "search_user", "search_dashboards", "get_my_dashboards", "create_dashboard"}
 	needsGrafana := false
 	for _, f := range grafanaRequired {
 		if funcName == f {
@@ -321,16 +405,18 @@ func handleToolCall(
 		discoveryService = NewDiscoveryService(settings.GrafanaURL, settings.GrafanaToken)
 	}
 
-	// SECURITY: Check permissions for write operations
+	// SECURITY: Check permissions for write operations (whitelist approach)
 	writeOperations := []string{"create_dashboard"}
 	for _, op := range writeOperations {
 		if funcName == op {
-			// Viewer cannot create dashboards
-			if loggedUser.Role == "Viewer" {
-				log.DefaultLogger.Warn("Viewer attempted write operation", "function", funcName, "user", loggedUser.Login)
+			// Only Editor and Admin can create dashboards
+			userRole := strings.ToLower(loggedUser.Role)
+			if userRole != "editor" && userRole != "admin" {
+				log.DefaultLogger.Warn("User without write permission attempted write operation",
+					"function", funcName, "user", loggedUser.Login, "role", loggedUser.Role)
 				return ChatResponse{
 					Type:    "message",
-					Message: "Você não tem permissão para criar dashboards. Seu role atual é **Viewer**. Solicite ao administrador permissões de **Editor** ou **Admin**.",
+					Message: fmt.Sprintf("Você não tem permissão para criar dashboards. Seu role atual é **%s**. Solicite ao administrador permissões de **Editor** ou **Admin**.", loggedUser.Role),
 					Success: true,
 				}
 			}
@@ -357,7 +443,7 @@ func handleToolCall(
 		log.DefaultLogger.Error("Tool execution failed", "function", funcName, "error", toolError)
 		return ChatResponse{
 			Type:    "message",
-			Message: fmt.Sprintf("Erro ao executar %s: %s", funcName, toolError.Error()),
+			Message: "Não foi possível completar a operação solicitada. Tente novamente ou reformule seu pedido.",
 			Success: true,
 		}
 	}
@@ -487,21 +573,6 @@ func handleToolCall(
 			}
 		}
 
-	case "get_user_permissions":
-		var userInfo UserInfo
-		if err := json.Unmarshal([]byte(toolResult), &userInfo); err == nil {
-			adminStr := "Não"
-			if userInfo.IsGrafanaAdmin {
-				adminStr = "Sim"
-			}
-			return ChatResponse{
-				Type:     "message",
-				Message:  fmt.Sprintf("Informações do Service Account:\n- Login: %s\n- Nome: %s\n- Role: %s\n- Admin: %s", userInfo.Login, userInfo.Name, userInfo.Role, adminStr),
-				Success:  true,
-				ToolUsed: funcName,
-			}
-		}
-
 	case "search_dashboards":
 		var dashboards []DashboardSearchResult
 		if err := json.Unmarshal([]byte(toolResult), &dashboards); err == nil {
@@ -593,7 +664,7 @@ func handleToolCall(
 			}
 		}
 
-		if !isOwnUser && loggedUser.Role != "Admin" {
+		if !isOwnUser && strings.ToLower(loggedUser.Role) != "admin" {
 			return ChatResponse{
 				Type:     "message",
 				Message:  fmt.Sprintf("Por questões de privacidade, você só pode consultar informações do seu próprio usuário (%s). Para consultar outros usuários, é necessário ter permissão de Admin.", loggedUser.Email),
@@ -701,15 +772,6 @@ func executeToolCall(
 		result, _ := json.Marshal(services)
 		return string(result), nil
 
-	case "get_user_permissions":
-		userInfo, err := discoveryService.GetUserInfo()
-		if err != nil {
-			return "", fmt.Errorf("failed to get user info: %w", err)
-		}
-
-		result, _ := json.Marshal(userInfo)
-		return string(result), nil
-
 	case "search_user":
 		var params struct {
 			LoginOrEmail string `json:"login_or_email"`
@@ -767,6 +829,12 @@ func executeToolCall(
 		if err := json.Unmarshal(args, &dashData); err != nil {
 			return "", fmt.Errorf("invalid dashboard parameters: %w", err)
 		}
+
+		// Resolve unique title (auto-handles collisions)
+		dashData.Title = resolveUniqueTitle(discoveryService, dashData.Title)
+
+		// Infer and enrich tags from dashboard content (backend safety net)
+		dashData.Tags = inferTags(&dashData)
 
 		// Set the requesting user for audit purposes (stored in dashboard metadata)
 		impersonateUser := ""
@@ -907,14 +975,6 @@ func validateDashboardParams(args json.RawMessage, discoveryService *DiscoverySe
 		// Log warnings but don't block
 		for _, warning := range queryValidation.Warnings {
 			log.DefaultLogger.Warn("Query warning in dashboard creation", "warning", warning)
-		}
-	}
-
-	// Check if dashboard already exists
-	if discoveryService != nil {
-		exists, existingUID := discoveryService.DashboardExists(title)
-		if exists {
-			return fmt.Sprintf("Já existe um dashboard com o título \"%s\" (UID: %s). Por segurança, não é permitido sobrescrever dashboards existentes. Escolha outro título ou edite o dashboard existente manualmente.", title, existingUID)
 		}
 	}
 
@@ -1099,4 +1159,141 @@ func enrichContextWithDefaults(ctx *EnvironmentContext, settings AppSettings) {
 		"otherLoki", len(ctx.OtherLoki),
 		"defaultTempo", ctx.DefaultTempo != nil,
 		"otherTempo", len(ctx.OtherTempo))
+}
+
+// resolveUniqueTitle checks if a dashboard title already exists and resolves collisions
+// by appending a numeric suffix. Returns the resolved (unique) title.
+func resolveUniqueTitle(ds *DiscoveryService, title string) string {
+	if ds == nil {
+		return title
+	}
+
+	// Try the original title first
+	exists, _ := ds.DashboardExists(title)
+	if !exists {
+		return title
+	}
+
+	log.DefaultLogger.Info("Dashboard title collision detected, resolving", "title", title)
+
+	// Try suffixes (2) through (10)
+	for i := 2; i <= 10; i++ {
+		candidate := fmt.Sprintf("%s (%d)", title, i)
+		exists, _ := ds.DashboardExists(candidate)
+		if !exists {
+			log.DefaultLogger.Info("Resolved dashboard title", "original", title, "resolved", candidate)
+			return candidate
+		}
+	}
+
+	// Fallback: use timestamp
+	candidate := fmt.Sprintf("%s (%d)", title, time.Now().Unix())
+	log.DefaultLogger.Info("Resolved dashboard title with timestamp", "original", title, "resolved", candidate)
+	return candidate
+}
+
+// inferTags analyzes the dashboard title, panel queries, and panel types to generate
+// relevant tags. It merges inferred tags with any tags already provided by the AI,
+// guaranteeing that every dashboard has meaningful, content-based tags.
+func inferTags(dashData *AdvancedDashData) []string {
+	existing := make(map[string]bool)
+	for _, t := range dashData.Tags {
+		existing[strings.ToLower(t)] = true
+	}
+
+	// helper: add tag only if not already present
+	add := func(tag string) {
+		tag = strings.ToLower(tag)
+		if !existing[tag] {
+			existing[tag] = true
+			dashData.Tags = append(dashData.Tags, tag)
+		}
+	}
+
+	// Combine title + all queries into a single searchable string
+	blob := strings.ToLower(dashData.Title)
+	for _, p := range dashData.Panels {
+		blob += " " + strings.ToLower(p.Query) + " " + strings.ToLower(p.Title)
+	}
+
+	// --- Keyword → tag mapping (order doesn't matter, all are checked) ---
+	keywordTags := []struct {
+		keywords []string
+		tag      string
+	}{
+		// Infrastructure resources
+		{[]string{"cpu", "processor", "system_cpu"}, "cpu"},
+		{[]string{"memory", "memória", "mem_", "system_memory"}, "memory"},
+		{[]string{"disk", "disco", "filesystem", "system_disk", "fs_"}, "disk"},
+		{[]string{"network", "rede", "net_", "system_network", "tcp_", "udp_"}, "network"},
+		{[]string{"node_", "host", "machine"}, "infrastructure"},
+		{[]string{"container_", "docker", "k8s", "kube", "pod"}, "containers"},
+
+		// Protocols / services
+		{[]string{"http_", "http_request", "http_response"}, "http"},
+		{[]string{"grpc_", "grpc."}, "grpc"},
+		{[]string{"dns_"}, "dns"},
+
+		// Methodologies
+		{[]string{"golden signal", "latency", "traffic", "errors", "saturation"}, "golden-signals"},
+		{[]string{"red method", "rate", "duration"}, "red-method"},
+		{[]string{"use method", "utilization"}, "use-method"},
+
+		// Observability pillars
+		{[]string{"log", "loki", "logql"}, "logs"},
+		{[]string{"trace", "tempo", "traceql", "span"}, "traces"},
+
+		// Application
+		{[]string{"jvm", "java", "heap"}, "jvm"},
+		{[]string{"process_", "runtime"}, "process"},
+		{[]string{"go_", "golang"}, "golang"},
+		{[]string{"nginx"}, "nginx"},
+		{[]string{"postgres", "pg_", "mysql", "database", "db_"}, "database"},
+	}
+
+	for _, kt := range keywordTags {
+		for _, kw := range kt.keywords {
+			if strings.Contains(blob, kw) {
+				add(kt.tag)
+				break
+			}
+		}
+	}
+
+	// --- Panel-type heuristics for methodology detection ---
+	panelTypeCounts := make(map[string]int)
+	for _, p := range dashData.Panels {
+		panelTypeCounts[p.Type]++
+	}
+
+	hasGauge := panelTypeCounts["gauge"] > 0
+	hasStat := panelTypeCounts["stat"] > 0
+	hasTimeseries := panelTypeCounts["timeseries"] > 0
+	hasHeatmap := panelTypeCounts["heatmap"] > 0
+
+	// Golden Signals pattern: stat + timeseries + (heatmap or gauge), 4+ panels
+	if len(dashData.Panels) >= 4 && hasStat && hasTimeseries && (hasHeatmap || hasGauge) {
+		add("golden-signals")
+	}
+	// USE pattern: gauge + timeseries together
+	if hasGauge && hasTimeseries {
+		add("use-method")
+	}
+	// RED pattern: stat + timeseries (rates and errors)
+	if hasStat && hasTimeseries && !hasGauge {
+		add("red-method")
+	}
+
+	// If after all inference we still have no tags (beyond what AI sent), add a generic one from the title
+	// This shouldn't normally happen but acts as a final safety net
+	if len(dashData.Tags) == 0 {
+		add("monitoring")
+	}
+
+	log.DefaultLogger.Info("Tags inferred for dashboard",
+		"title", dashData.Title,
+		"finalTags", dashData.Tags,
+		"totalCount", len(dashData.Tags))
+
+	return dashData.Tags
 }

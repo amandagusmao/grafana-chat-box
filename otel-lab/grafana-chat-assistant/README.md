@@ -1,167 +1,89 @@
 # Grafana Chat Assistant
 
-Um plugin Grafana com backend nativo em Go que adiciona um assistente de IA para auxiliar na criação de dashboards.
+Assistente de IA integrado ao Grafana para tirar dúvidas sobre observabilidade e criar dashboards de forma conversacional.
+
+## O que este plugin faz
+
+O Chat Assistant é um chat inteligente dentro do Grafana, especializado em observabilidade. Ele conhece sua instância — datasources configurados, métricas disponíveis, dashboards existentes — e usa esse contexto para te ajudar de forma prática.
+
+**Importante:** O assistente responde exclusivamente sobre Grafana e observabilidade. Perguntas fora desse escopo serão recusadas educadamente.
 
 ## Funcionalidades
 
-- Chat interativo com IA (OpenAI GPT-4o-mini)
-- Sugestões inteligentes de métricas e visualizações
-- Criação automática de dashboards via conversa
-- Backend Go nativo - plugin completamente autônomo
-- Suporte a múltiplas plataformas (Linux, Windows, macOS)
+### Conversa sobre Grafana e Observabilidade
 
-## Requisitos
+- Tire dúvidas sobre conceitos de observabilidade (Golden Signals, RED, USE, SLI/SLO)
+- Pergunte sobre PromQL, LogQL e TraceQL — sintaxe, funções, boas práticas
+- Peça recomendações de painéis e visualizações para diferentes cenários
+- Entenda quando usar cada tipo de visualização (timeseries, gauge, stat, heatmap, etc.)
 
-### Para Build
-- Node.js 18+
-- Go 1.21+
-- Mage (Go build tool): `go install github.com/magefile/mage@latest`
+### Descoberta do Ambiente
 
-### Para Execução
-- Grafana 9.0+
-- Chave de API da OpenAI
+O assistente consulta sua instância em tempo real:
 
-## Instalação
+- **Métricas** — busca métricas Prometheus disponíveis por padrão (ex: `node_`, `http_`, `process_`)
+- **Datasources** — lista todos os datasources configurados (Prometheus, Loki, Tempo e outros)
+- **Labels Loki** — descobre labels disponíveis nos seus logs
+- **Serviços Tempo** — lista serviços disponíveis para consultas de traces
+- **Dashboards existentes** — pesquisa dashboards por nome ou tema
+- **Seus dashboards** — lista dashboards que você criou ou que foram criados para você
 
-### Opção 1: Build local
+### Criação de Dashboards
 
-1. Clone o repositório e navegue até a pasta do plugin:
-```bash
-cd otel-lab/grafana-chat-assistant
-```
+Peça um dashboard em linguagem natural e o assistente:
 
-2. Instale as dependências do frontend:
-```bash
-npm install
-```
+1. Descobre quais métricas existem no seu ambiente
+2. Seleciona as métricas mais relevantes para o que você pediu
+3. Escolhe os tipos de visualização mais adequados para cada métrica
+4. Cria o dashboard no Grafana com painéis configurados, thresholds e organização lógica
+5. Gera um link direto para você acessar o dashboard criado
 
-3. Instale as dependências do backend:
-```bash
-go mod download
-```
+**Recursos da criação:**
 
-4. Build completo (frontend + backend para todas as plataformas):
-```bash
-npm run build
-```
+- Nome gerado automaticamente se você não especificar um
+- Se já existir um dashboard com o mesmo nome, o assistente escolhe outro automaticamente
+- Tags relevantes adicionadas com base no conteúdo (cpu, memory, golden-signals, etc.)
+- Suporte a variáveis de template para dashboards dinâmicos
+- Dashboard criado em nome do usuário que solicitou (para auditoria)
 
-Ou build apenas para uma plataforma específica:
-```bash
-npm run build:frontend
-npm run build:backend:linux    # Linux amd64
-npm run build:backend:windows  # Windows amd64
-npm run build:backend:darwin   # macOS (amd64 + arm64)
-```
+### Consulta de Informações do Usuário
 
-5. Copie a pasta `dist/` para o diretório de plugins do Grafana:
-```bash
-cp -r dist /var/lib/grafana/plugins/grafana-chat-assistant
-```
+- Consulte suas próprias permissões e role na organização
+- Administradores podem consultar informações de outros usuários
 
-6. Reinicie o Grafana.
+## Exemplos de uso
 
-### Opção 2: Docker (desenvolvimento)
+**Descoberta e aprendizado:**
+- "Quais métricas de CPU estão disponíveis?"
+- "O que é o RED Method e como aplico no Grafana?"
+- "Qual a diferença entre rate() e irate() no PromQL?"
+- "Quais datasources estão configurados nessa instância?"
 
-O plugin já está configurado no docker-compose do projeto:
+**Criação de dashboards:**
+- "Crie um dashboard de infraestrutura com CPU, memória e disco"
+- "Quero um dashboard com Golden Signals para meus serviços HTTP"
+- "Monte um painel mostrando a utilização de rede das últimas 6 horas"
+- "Preciso de um dashboard USE Method para monitorar saturação dos hosts"
 
-```bash
-cd otel-lab
-docker-compose up -d
-```
+**Exploração:**
+- "Quais dashboards existem sobre network?"
+- "Liste os serviços disponíveis no Tempo"
+- "Quais labels posso usar para filtrar logs no Loki?"
 
-## Configuração
+## Permissões
 
-1. Acesse o Grafana e vá para **Administration > Plugins**
-2. Encontre "Grafana Chat Assistant" e clique em **Enable**
-3. Vá para a página de configuração do plugin
-4. Configure:
-   - **OpenAI API Key** (obrigatório): Sua chave de API da OpenAI
-   - **Grafana URL** (opcional): URL da instância Grafana
-   - **Service Account Token** (opcional): Token para criação automática de dashboards
+| Ação | Viewer | Editor | Admin |
+|------|--------|--------|-------|
+| Conversar e tirar dúvidas | Sim | Sim | Sim |
+| Buscar métricas e datasources | Sim | Sim | Sim |
+| Pesquisar dashboards | Sim | Sim | Sim |
+| Criar dashboards | Não | Sim | Sim |
+| Consultar dados de outros usuários | Não | Não | Sim |
 
-### Criando um Service Account Token
+## Acesso
 
-Para habilitar a criação automática de dashboards:
+Após o plugin estar habilitado, acesse pelo menu lateral do Grafana: **Chat Assistant**.
 
-1. Vá em **Administration > Service Accounts**
-2. Crie uma nova Service Account
-3. Adicione a role "Editor" ou "Admin"
-4. Gere um token e copie para as configurações do plugin
-
-## Uso
-
-1. Após habilitar o plugin, acesse pelo menu lateral: **Chat Assistant**
-2. Converse naturalmente sobre suas necessidades de observabilidade
-3. O assistente irá:
-   - Sugerir métricas apropriadas
-   - Recomendar tipos de visualização
-   - Criar dashboards automaticamente quando solicitado
-
-### Exemplos de Perguntas
-
-- "Preciso de um dashboard para monitorar minha API REST"
-- "Quais métricas devo usar para observar um banco PostgreSQL?"
-- "Crie um dashboard de performance com métricas do Prometheus"
-
-## Estrutura do Projeto
-
-```
-grafana-chat-assistant/
-├── src/                    # Frontend (React/TypeScript)
-│   ├── components/
-│   │   ├── ChatAppPage.tsx # Interface do chat
-│   │   └── ConfigPage.tsx  # Página de configuração
-│   ├── module.tsx          # Entry point do plugin
-│   └── plugin.json         # Manifesto do plugin
-├── pkg/                    # Backend (Go)
-│   ├── main.go
-│   └── plugin/
-│       ├── app.go          # Inicialização do app
-│       ├── handlers.go     # HTTP handlers
-│       ├── openai_service.go
-│       └── grafana_service.go
-├── dist/                   # Build output
-├── go.mod
-├── Magefile.go            # Build system Go
-└── package.json
-```
-
-## Desenvolvimento
-
-### Frontend
-```bash
-npm run dev  # Watch mode
-```
-
-### Backend
-```bash
-go build -o dist/gpx_grafana-chat-assistant_linux_amd64 ./pkg
-```
-
-### Lint
-```bash
-npm run lint
-npm run lint:fix
-```
-
-## Configuração do Grafana (Unsigned Plugin)
-
-Para instâncias que não permitem plugins não assinados, adicione ao `grafana.ini`:
-
-```ini
-[plugins]
-allow_loading_unsigned_plugins = grafana-chat-assistant
-```
-
-Ou via variável de ambiente:
-```bash
-GF_PLUGINS_ALLOW_LOADING_UNSIGNED_PLUGINS=grafana-chat-assistant
-```
-
-## Autor
+## Autora
 
 Amanda Gusmão
-
-## Licença
-
-MIT

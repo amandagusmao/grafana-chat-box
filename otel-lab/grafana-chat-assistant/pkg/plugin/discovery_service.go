@@ -556,6 +556,49 @@ func (s *DiscoveryService) SearchUser(loginOrEmail string) (*UserInfo, error) {
 	return nil, fmt.Errorf("usuário '%s' não encontrado na organização atual", loginOrEmail)
 }
 
+// VerifiedUser represents a user whose role has been confirmed via Grafana API
+type VerifiedUser struct {
+	Login string `json:"login"`
+	Email string `json:"email"`
+	Role  string `json:"role"`
+}
+
+// VerifyUserRole looks up a user by login or email in the current org and returns their confirmed role
+func (s *DiscoveryService) VerifyUserRole(loginOrEmail string) (*VerifiedUser, error) {
+	if loginOrEmail == "" {
+		return nil, fmt.Errorf("login or email is required")
+	}
+
+	body, err := s.makeRequest("GET", "/api/org/users")
+	if err != nil {
+		return nil, fmt.Errorf("failed to get org users: %w", err)
+	}
+
+	var orgUsers []struct {
+		Login string `json:"login"`
+		Email string `json:"email"`
+		Role  string `json:"role"`
+	}
+
+	if err := json.Unmarshal(body, &orgUsers); err != nil {
+		return nil, fmt.Errorf("failed to parse org users: %w", err)
+	}
+
+	target := strings.ToLower(loginOrEmail)
+	for _, u := range orgUsers {
+		if strings.ToLower(u.Login) == target || strings.ToLower(u.Email) == target {
+			log.DefaultLogger.Info("Verified user role via API", "login", u.Login, "email", u.Email, "role", u.Role)
+			return &VerifiedUser{
+				Login: u.Login,
+				Email: u.Email,
+				Role:  u.Role,
+			}, nil
+		}
+	}
+
+	return nil, fmt.Errorf("user '%s' not found in current organization", loginOrEmail)
+}
+
 // DashboardInfo represents a dashboard search result
 type DashboardSearchResult struct {
 	UID       string   `json:"uid"`
