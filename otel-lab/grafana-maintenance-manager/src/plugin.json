@@ -1,0 +1,54 @@
+{
+  "type": "app",
+  "name": "Maintenance Manager",
+  "id": "grafana-maintenance-manager",
+  "category": "plugin",
+  "executable": "gpx_grafana-maintenance-manager",
+  "backend": true,
+  "dependencies": {
+    "grafanaVersion": "9.0.0",
+    "plugins": []
+  },
+  "includes": [
+    {
+      "type": "page",
+      "name": "Gerenciar",
+      "path": "/a/grafana-maintenance-manager/manage",
+      "role": "Viewer",
+      "addToNav": true,
+      "defaultNav": true
+    },
+    {
+      "type": "page",
+      "name": "Configuração",
+      "path": "/a/grafana-maintenance-manager/config",
+      "role": "Admin",
+      "addToNav": true
+    }
+  ],
+  "info": {
+    "description": "Plugin para gerenciar o status de manutenção de serviços em uma tabela SQL. Permite buscar, visualizar e alterar o status de manutenção com controle de acesso por organização.",
+    "author": {
+      "name": "Amanda Gusmão",
+      "email": "amanda.gusmao@bradesco.com.br"
+    },
+    "keywords": ["maintenance", "sql", "manager", "services", "status"],
+    "links": [
+      {
+        "name": "Website",
+        "url": "https://example.com"
+      },
+      {
+        "name": "License",
+        "url": "https://github.com/grafana/grafana-starter-app-plugin/blob/master/LICENSE"
+      }
+    ],
+    "logos": {
+      "small": "img/logo.svg",
+      "large": "img/logo.svg"
+    },
+    "screenshots": [],
+    "version": "1.0.0",
+    "updated": "2024-01-01"
+  }
+}

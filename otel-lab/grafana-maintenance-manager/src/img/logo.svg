@@ -1,0 +1,10 @@
+<svg width="64" height="64" viewBox="0 0 64 64" xmlns="http://www.w3.org/2000/svg">
+  <circle cx="32" cy="32" r="30" fill="#3498db" stroke="#fff" stroke-width="2"/>
+  <g fill="#fff">
+    <!-- Wrench icon -->
+    <path d="M42 22c-3.3 0-6.2 1.7-7.9 4.3l-12.5 12.5c-.8-.3-1.7-.5-2.6-.5-4.4 0-8 3.6-8 8s3.6 8 8 8c3.7 0 6.8-2.5 7.7-6l12.8-12.8c.4.1.9.2 1.5.2 4.4 0 8-3.6 8-8s-3.6-8-8-8h1zm-23 24c-1.7 0-3-1.3-3-3s1.3-3 3-3 3 1.3 3 3-1.3 3-3 3zm23-16c1.7 0 3 1.3 3 3s-1.3 3-3 3-3-1.3-3-3 1.3-3 3-3z"/>
+    <!-- Toggle switch -->
+    <rect x="20" y="14" width="24" height="10" rx="5" fill="none" stroke="#fff" stroke-width="2"/>
+    <circle cx="38" cy="19" r="3" fill="#2ecc71"/>
+  </g>
+</svg>
