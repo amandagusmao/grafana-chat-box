@@ -1,5 +1,7 @@
 package plugin
 
+import "time"
+
 // AppSettings contains the plugin settings from Grafana
 type AppSettings struct {
 	// Connection
@@ -7,13 +9,15 @@ type AppSettings struct {
 	GrafanaURL    string `json:"grafanaUrl"`
 	GrafanaToken  string `json:"grafanaToken"`
 
-	// Table configuration
-	TableName           string `json:"tableName"`
-	PrimaryKeyColumn    string `json:"primaryKeyColumn"`    // ex: "id"
-	MaintenanceColumn   string `json:"maintenanceColumn"`   // ex: "manutencao"
-	SearchColumn        string `json:"searchColumn"`        // ex: "id_cadastro"
-	DisplayNameColumn   string `json:"displayNameColumn"`   // ex: "nome"
-	AdditionalColumns   string `json:"additionalColumns"`   // ex: "id_servico,ativo" (comma separated)
+	// Query configuration
+	SelectQuery       string `json:"selectQuery"`       // Custom SELECT query (can include JOINs)
+	UpdateTable       string `json:"updateTable"`       // Table name for UPDATE operations
+	IdColumn          string `json:"idColumn"`          // Column for search and UPDATE WHERE clause (e.g., "id_cadastro")
+	NameColumn        string `json:"nameColumn"`        // Column that displays the name (e.g., "nome")
+	MaintenanceColumn string `json:"maintenanceColumn"` // Column to update (0/1)
+
+	// Audit configuration
+	AuditTable string `json:"auditTable"` // Table name for audit logs (optional)
 
 	// Access control
 	AllowedOrgID string `json:"allowedOrgId"`
@@ -29,11 +33,10 @@ type DatasourceInfo struct {
 
 // ServiceRecord represents a record from the SQL table (dynamic)
 type ServiceRecord struct {
-	ID              interface{}            `json:"id"`
-	DisplayName     string                 `json:"displayName"`
-	SearchValue     interface{}            `json:"searchValue"`
-	Manutencao      bool                   `json:"manutencao"`
-	AdditionalData  map[string]interface{} `json:"additionalData,omitempty"`
+	ID         interface{}            `json:"id"`
+	Nome       string                 `json:"nome"`
+	Manutencao bool                   `json:"manutencao"`
+	Fields     map[string]interface{} `json:"fields,omitempty"` // All other fields from query
 }
 
 // SearchRequest represents the search request parameters
@@ -47,22 +50,14 @@ type SearchResponse struct {
 	Success bool            `json:"success"`
 	Records []ServiceRecord `json:"records"`
 	Error   string          `json:"error,omitempty"`
-	Config  *TableConfig    `json:"config,omitempty"`
-}
-
-// TableConfig returns the configured column names for frontend display
-type TableConfig struct {
-	PrimaryKeyColumn  string   `json:"primaryKeyColumn"`
-	MaintenanceColumn string   `json:"maintenanceColumn"`
-	SearchColumn      string   `json:"searchColumn"`
-	DisplayNameColumn string   `json:"displayNameColumn"`
-	AdditionalColumns []string `json:"additionalColumns"`
+	Columns []string        `json:"columns,omitempty"` // Column names from query result
 }
 
 // UpdateRequest represents the update request parameters
 type UpdateRequest struct {
 	ID         interface{} `json:"id"`
 	Manutencao bool        `json:"manutencao"`
+	RecordName string      `json:"recordName"` // For audit logging
 }
 
 // UpdateResponse represents the update response
@@ -78,14 +73,18 @@ type PermissionResponse struct {
 	CurrentOrgID  int64  `json:"currentOrgId"`
 	AllowedOrgID  int64  `json:"allowedOrgId"`
 	UserLogin     string `json:"userLogin"`
+	UserEmail     string `json:"userEmail"`
 	Message       string `json:"message,omitempty"`
 }
 
 // ConfigResponse returns current plugin configuration to frontend
 type ConfigResponse struct {
-	Success     bool         `json:"success"`
-	TableConfig *TableConfig `json:"tableConfig,omitempty"`
-	Error       string       `json:"error,omitempty"`
+	Success           bool   `json:"success"`
+	IdColumn          string `json:"idColumn"`
+	NameColumn        string `json:"nameColumn"`
+	MaintenanceColumn string `json:"maintenanceColumn"`
+	HasAuditTable     bool   `json:"hasAuditTable"`
+	Error             string `json:"error,omitempty"`
 }
 
 // DatasourcesResponse represents the datasources list response
@@ -99,4 +98,33 @@ type LoggedUser struct {
 	Email string
 	Role  string
 	OrgID int64
+}
+
+// AuditEntry represents an audit log entry
+type AuditEntry struct {
+	ID            int64     `json:"id"`
+	UserLogin     string    `json:"userLogin"`
+	UserEmail     string    `json:"userEmail"`
+	Action        string    `json:"action"`
+	RecordID      string    `json:"recordId"`
+	RecordName    string    `json:"recordName"`
+	OldValue      bool      `json:"oldValue"`
+	NewValue      bool      `json:"newValue"`
+	Timestamp     time.Time `json:"timestamp"`
+	TimestampStr  string    `json:"timestampStr"` // Formatted for display
+}
+
+// AuditRequest represents audit log query parameters
+type AuditRequest struct {
+	RecordID string `json:"recordId"` // Optional: filter by record ID
+	Limit    int    `json:"limit"`    // Max records to return
+	Offset   int    `json:"offset"`   // Pagination offset
+}
+
+// AuditResponse represents the audit log response
+type AuditResponse struct {
+	Success bool         `json:"success"`
+	Entries []AuditEntry `json:"entries"`
+	Total   int          `json:"total"`
+	Error   string       `json:"error,omitempty"`
 }

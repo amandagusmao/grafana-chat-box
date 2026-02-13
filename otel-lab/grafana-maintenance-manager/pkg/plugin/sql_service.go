@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"regexp"
 	"strings"
 	"time"
 
@@ -16,17 +17,15 @@ import (
 type SQLService struct {
 	grafanaURL    string
 	datasourceUID string
-	tableName     string
 	settings      AppSettings
 	httpClient    *http.Client
 }
 
 // NewSQLService creates a new SQL service
-func NewSQLService(grafanaURL, datasourceUID, tableName string, settings AppSettings) *SQLService {
+func NewSQLService(grafanaURL, datasourceUID string, settings AppSettings) *SQLService {
 	return &SQLService{
 		grafanaURL:    grafanaURL,
 		datasourceUID: datasourceUID,
-		tableName:     tableName,
 		settings:      settings,
 		httpClient: &http.Client{
 			Timeout: 30 * time.Second,
@@ -79,39 +78,46 @@ type FrameField struct {
 	Type string `json:"type"`
 }
 
-// SearchRecords searches for records matching the criteria
-func (s *SQLService) SearchRecords(searchValues []string, searchByName bool, token string) ([]ServiceRecord, error) {
-	// Build column list
-	columns := []string{s.settings.PrimaryKeyColumn, s.settings.MaintenanceColumn}
-
-	if s.settings.DisplayNameColumn != "" {
-		columns = append(columns, s.settings.DisplayNameColumn)
+// extractTopClause extracts TOP N from a SQL query and returns the query without TOP and the TOP clause
+func extractTopClause(query string) (string, string) {
+	// Match TOP followed by a number (with optional parentheses)
+	re := regexp.MustCompile(`(?i)\bTOP\s+(\d+|\(\d+\))\s*`)
+	match := re.FindString(query)
+	if match != "" {
+		queryWithoutTop := re.ReplaceAllString(query, "")
+		return queryWithoutTop, strings.TrimSpace(match)
 	}
-	if s.settings.SearchColumn != "" {
-		columns = append(columns, s.settings.SearchColumn)
-	}
+	return query, ""
+}
 
-	// Add additional columns
-	if s.settings.AdditionalColumns != "" {
-		for _, col := range strings.Split(s.settings.AdditionalColumns, ",") {
-			col = strings.TrimSpace(col)
-			if col != "" {
-				columns = append(columns, col)
-			}
-		}
+// SearchRecords executes the custom SELECT query with search filters
+func (s *SQLService) SearchRecords(searchValues []string, searchByName bool, token string) ([]ServiceRecord, []string, error) {
+	// Get the base SELECT query from settings
+	baseQuery := s.settings.SelectQuery
+	if baseQuery == "" {
+		return nil, nil, fmt.Errorf("SELECT query não configurada")
 	}
 
-	// Build WHERE clause for multiple values
-	whereClause := "1=1"
+	// Build WHERE clause for search
+	whereClause := ""
 	if len(searchValues) > 0 {
 		conditions := []string{}
-		searchColumn := s.settings.SearchColumn
-		if searchByName && s.settings.DisplayNameColumn != "" {
-			searchColumn = s.settings.DisplayNameColumn
-		}
 
-		if searchColumn == "" {
-			searchColumn = s.settings.PrimaryKeyColumn
+		// For name search, use the column name without alias (will search on subquery alias)
+		// For ID search, use the full column reference
+		var searchColumn string
+		if searchByName {
+			// Search by name - strip alias to search on computed column alias
+			searchColumn = stripTableAlias(s.settings.NameColumn)
+			if searchColumn == "" {
+				searchColumn = "nome"
+			}
+		} else {
+			// Search by ID uses the ID column with table alias (e.g., sc.id_cadastro)
+			searchColumn = s.settings.IdColumn
+			if searchColumn == "" {
+				searchColumn = "id"
+			}
 		}
 
 		for _, val := range searchValues {
@@ -119,14 +125,11 @@ func (s *SQLService) SearchRecords(searchValues []string, searchByName bool, tok
 			if val == "" {
 				continue
 			}
-			// Escape single quotes for SQL injection prevention
 			escapedVal := strings.ReplaceAll(val, "'", "''")
 
 			if searchByName {
-				// For name search, use LIKE
 				conditions = append(conditions, fmt.Sprintf("%s LIKE '%%%s%%'", searchColumn, escapedVal))
 			} else {
-				// For ID search, use exact match
 				conditions = append(conditions, fmt.Sprintf("%s = '%s'", searchColumn, escapedVal))
 			}
 		}
@@ -136,45 +139,137 @@ func (s *SQLService) SearchRecords(searchValues []string, searchByName bool, tok
 		}
 	}
 
-	// Build query - use TOP for MSSQL, LIMIT for others
-	columnList := strings.Join(columns, ", ")
-	query := fmt.Sprintf(`
-		SELECT TOP 500 %s
-		FROM %s
-		WHERE %s
-		ORDER BY %s
-	`, columnList, s.tableName, whereClause, s.settings.PrimaryKeyColumn)
+	var finalQuery string
 
-	log.DefaultLogger.Info("Executing search query", "query", query)
+	if searchByName && whereClause != "" {
+		// For name search, wrap in subquery to allow searching on aliases/computed columns
+		// Extract TOP clause to apply it on the outer query
+		queryWithoutTop, topClause := extractTopClause(baseQuery)
 
-	records, err := s.executeQuery(query, token)
-	if err != nil {
-		return nil, fmt.Errorf("failed to execute search query: %w", err)
+		if topClause != "" {
+			finalQuery = fmt.Sprintf("SELECT %s * FROM (%s) AS search_base WHERE %s",
+				topClause, queryWithoutTop, whereClause)
+		} else {
+			finalQuery = fmt.Sprintf("SELECT TOP 500 * FROM (%s) AS search_base WHERE %s",
+				queryWithoutTop, whereClause)
+		}
+	} else if strings.Contains(baseQuery, "{{WHERE}}") {
+		// Query has placeholder
+		if whereClause != "" {
+			finalQuery = strings.Replace(baseQuery, "{{WHERE}}", "WHERE "+whereClause, 1)
+		} else {
+			finalQuery = strings.Replace(baseQuery, "{{WHERE}}", "", 1)
+		}
+	} else if strings.Contains(strings.ToUpper(baseQuery), "WHERE") {
+		// Query already has WHERE, append with AND
+		if whereClause != "" {
+			finalQuery = baseQuery + " AND (" + whereClause + ")"
+		} else {
+			finalQuery = baseQuery
+		}
+	} else {
+		// No WHERE in query, add it
+		if whereClause != "" {
+			finalQuery = baseQuery + " WHERE " + whereClause
+		} else {
+			finalQuery = baseQuery
+		}
 	}
 
-	return records, nil
+	log.DefaultLogger.Info("Executing search query", "query", finalQuery)
+
+	records, columns, err := s.executeSelectQuery(finalQuery, token)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to execute search query: %w", err)
+	}
+
+	return records, columns, nil
+}
+
+// stripTableAlias removes table alias from column name (e.g., "sc.id" -> "id")
+func stripTableAlias(column string) string {
+	if idx := strings.LastIndex(column, "."); idx != -1 {
+		return column[idx+1:]
+	}
+	return column
+}
+
+// GetCurrentMaintenanceStatus retrieves the current maintenance status of a record
+func (s *SQLService) GetCurrentMaintenanceStatus(id interface{}, token string) (bool, error) {
+	if s.settings.UpdateTable == "" {
+		return false, fmt.Errorf("tabela não configurada")
+	}
+
+	idStr := fmt.Sprintf("%v", id)
+	// SECURITY: Validate ID contains only safe characters (alphanumeric, dash, underscore)
+	if !isValidID(idStr) {
+		return false, fmt.Errorf("ID contém caracteres inválidos")
+	}
+	idStr = strings.ReplaceAll(idStr, "'", "''")
+
+	idColumn := stripTableAlias(s.settings.IdColumn)
+	maintColumn := stripTableAlias(s.settings.MaintenanceColumn)
+
+	query := fmt.Sprintf(`
+		SELECT %s FROM %s WHERE %s = '%s'
+	`, maintColumn, s.settings.UpdateTable, idColumn, idStr)
+
+	log.DefaultLogger.Info("Getting current maintenance status", "query", query)
+
+	records, _, err := s.executeSelectQuery(query, token)
+	if err != nil {
+		return false, fmt.Errorf("failed to get current status: %w", err)
+	}
+
+	if len(records) == 0 {
+		return false, fmt.Errorf("registro não encontrado")
+	}
+
+	return records[0].Manutencao, nil
+}
+
+// isValidID checks if the ID contains only safe characters
+func isValidID(id string) bool {
+	for _, c := range id {
+		if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == '-' || c == '_') {
+			return false
+		}
+	}
+	return len(id) > 0 && len(id) <= 100
 }
 
 // UpdateMaintenance updates the maintenance status of a record
 func (s *SQLService) UpdateMaintenance(id interface{}, manutencao bool, token string) error {
+	if s.settings.UpdateTable == "" {
+		return fmt.Errorf("tabela de UPDATE não configurada")
+	}
+
 	manutencaoValue := 0
 	if manutencao {
 		manutencaoValue = 1
 	}
 
-	// Format ID based on type
 	idStr := fmt.Sprintf("%v", id)
+
+	// SECURITY: Validate ID contains only safe characters
+	if !isValidID(idStr) {
+		return fmt.Errorf("ID contém caracteres inválidos")
+	}
 	idStr = strings.ReplaceAll(idStr, "'", "''")
+
+	// Strip table alias for UPDATE query (e.g., "sc.id_cadastro" -> "id_cadastro")
+	idColumn := stripTableAlias(s.settings.IdColumn)
+	maintColumn := stripTableAlias(s.settings.MaintenanceColumn)
 
 	query := fmt.Sprintf(`
 		UPDATE %s
 		SET %s = %d
 		WHERE %s = '%s'
-	`, s.tableName, s.settings.MaintenanceColumn, manutencaoValue, s.settings.PrimaryKeyColumn, idStr)
+	`, s.settings.UpdateTable, maintColumn, manutencaoValue, idColumn, idStr)
 
 	log.DefaultLogger.Info("Executing update query", "query", query)
 
-	_, err := s.executeQuery(query, token)
+	_, _, err := s.executeSelectQuery(query, token)
 	if err != nil {
 		return fmt.Errorf("failed to execute update query: %w", err)
 	}
@@ -182,8 +277,162 @@ func (s *SQLService) UpdateMaintenance(id interface{}, manutencao bool, token st
 	return nil
 }
 
-// executeQuery executes a SQL query through Grafana's datasource proxy
-func (s *SQLService) executeQuery(rawSQL string, token string) ([]ServiceRecord, error) {
+// LogAudit logs an audit entry to the audit table
+// SECURITY: This function MUST succeed for any update to proceed
+func (s *SQLService) LogAudit(user LoggedUser, action, recordID, recordName string, oldValue, newValue bool, token string) error {
+	// SECURITY: Audit table is REQUIRED - no silent skipping allowed
+	if s.settings.AuditTable == "" {
+		return fmt.Errorf("tabela de auditoria não configurada - auditoria é obrigatória")
+	}
+
+	// SECURITY: User must be identified
+	if user.Login == "" {
+		return fmt.Errorf("usuário não identificado - auditoria requer identificação")
+	}
+
+	// Sanitize all inputs
+	escapedLogin := strings.ReplaceAll(user.Login, "'", "''")
+	escapedEmail := strings.ReplaceAll(user.Email, "'", "''")
+	escapedRecordID := strings.ReplaceAll(recordID, "'", "''")
+	escapedAction := strings.ReplaceAll(action, "'", "''")
+
+	// Truncate and sanitize record name to prevent very long strings
+	safeName := recordName
+	if len(safeName) > 450 {
+		safeName = safeName[:450]
+	}
+	escapedRecordName := strings.ReplaceAll(safeName, "'", "''")
+
+	oldVal := 0
+	if oldValue {
+		oldVal = 1
+	}
+	newVal := 0
+	if newValue {
+		newVal = 1
+	}
+
+	query := fmt.Sprintf(`
+		INSERT INTO %s (user_login, user_email, action, record_id, record_name, old_value, new_value, timestamp)
+		VALUES ('%s', '%s', '%s', '%s', '%s', %d, %d, GETDATE())
+	`, s.settings.AuditTable, escapedLogin, escapedEmail, escapedAction, escapedRecordID, escapedRecordName, oldVal, newVal)
+
+	log.DefaultLogger.Info("Logging audit entry", "user", user.Login, "action", action, "recordId", recordID)
+
+	_, _, err := s.executeSelectQuery(query, token)
+	if err != nil {
+		log.DefaultLogger.Error("CRITICAL: Failed to log audit entry", "error", err)
+		return fmt.Errorf("falha ao registrar auditoria: %w", err)
+	}
+
+	return nil
+}
+
+// GetAuditLogs retrieves audit logs from the audit table
+func (s *SQLService) GetAuditLogs(recordID string, limit, offset int, token string) ([]AuditEntry, int, error) {
+	if s.settings.AuditTable == "" {
+		return nil, 0, fmt.Errorf("tabela de auditoria não configurada")
+	}
+
+	if limit <= 0 {
+		limit = 100
+	}
+
+	// Build WHERE clause
+	whereClause := ""
+	if recordID != "" {
+		escapedID := strings.ReplaceAll(recordID, "'", "''")
+		whereClause = fmt.Sprintf("WHERE record_id = '%s'", escapedID)
+	}
+
+	// Get audit entries using OFFSET/FETCH (SQL Server 2012+)
+	// Note: Cannot use TOP with OFFSET, must use FETCH NEXT instead
+	query := fmt.Sprintf(`
+		SELECT id, user_login, user_email, action, record_id, record_name, old_value, new_value, timestamp
+		FROM %s
+		%s
+		ORDER BY timestamp DESC
+		OFFSET %d ROWS FETCH NEXT %d ROWS ONLY
+	`, s.settings.AuditTable, whereClause, offset, limit)
+
+	log.DefaultLogger.Info("Fetching audit logs", "query", query)
+
+	entries, err := s.executeAuditQuery(query, token)
+	if err != nil {
+		return nil, 0, fmt.Errorf("failed to fetch audit logs: %w", err)
+	}
+
+	return entries, len(entries), nil
+}
+
+// executeSelectQuery executes a SQL query and returns records
+func (s *SQLService) executeSelectQuery(rawSQL string, token string) ([]ServiceRecord, []string, error) {
+	reqPayload := QueryRequest{
+		Queries: []Query{
+			{
+				RefID: "A",
+				Datasource: struct {
+					UID  string `json:"uid"`
+					Type string `json:"type"`
+				}{
+					UID:  s.datasourceUID,
+					Type: "mssql",
+				},
+				RawSQL: rawSQL,
+				Format: "table",
+			},
+		},
+		From: "now-1h",
+		To:   "now",
+	}
+
+	payloadBytes, err := json.Marshal(reqPayload)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to marshal request: %w", err)
+	}
+
+	url := fmt.Sprintf("%s/api/ds/query", s.grafanaURL)
+	req, err := http.NewRequest("POST", url, bytes.NewReader(payloadBytes))
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to create request: %w", err)
+	}
+
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+token)
+
+	resp, err := s.httpClient.Do(req)
+	if err != nil {
+		return nil, nil, fmt.Errorf("request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to read response: %w", err)
+	}
+
+	if resp.StatusCode >= 400 {
+		log.DefaultLogger.Error("Query failed", "status", resp.StatusCode, "body", string(body))
+		return nil, nil, fmt.Errorf("query failed with status %d: %s", resp.StatusCode, string(body))
+	}
+
+	var queryResp QueryResponse
+	if err := json.Unmarshal(body, &queryResp); err != nil {
+		return nil, nil, fmt.Errorf("failed to parse response: %w", err)
+	}
+
+	if result, ok := queryResp.Results["A"]; ok {
+		if result.Error != "" {
+			return nil, nil, fmt.Errorf("query error: %s", result.Error)
+		}
+		return s.parseRecordsFromFrames(result.Frames)
+	}
+
+	return []ServiceRecord{}, []string{}, nil
+}
+
+// executeAuditQuery executes a query and returns audit entries
+func (s *SQLService) executeAuditQuery(rawSQL string, token string) ([]AuditEntry, error) {
 	reqPayload := QueryRequest{
 		Queries: []Query{
 			{
@@ -229,7 +478,7 @@ func (s *SQLService) executeQuery(rawSQL string, token string) ([]ServiceRecord,
 	}
 
 	if resp.StatusCode >= 400 {
-		log.DefaultLogger.Error("Query failed", "status", resp.StatusCode, "body", string(body))
+		log.DefaultLogger.Error("Audit query failed", "status", resp.StatusCode, "body", string(body))
 		return nil, fmt.Errorf("query failed with status %d: %s", resp.StatusCode, string(body))
 	}
 
@@ -238,19 +487,21 @@ func (s *SQLService) executeQuery(rawSQL string, token string) ([]ServiceRecord,
 		return nil, fmt.Errorf("failed to parse response: %w", err)
 	}
 
+	entries := []AuditEntry{}
 	if result, ok := queryResp.Results["A"]; ok {
 		if result.Error != "" {
 			return nil, fmt.Errorf("query error: %s", result.Error)
 		}
-		return s.parseRecordsFromFrames(result.Frames)
+		entries = s.parseAuditFromFrames(result.Frames)
 	}
 
-	return []ServiceRecord{}, nil
+	return entries, nil
 }
 
 // parseRecordsFromFrames converts Grafana data frames to ServiceRecord slice
-func (s *SQLService) parseRecordsFromFrames(frames []Frame) ([]ServiceRecord, error) {
+func (s *SQLService) parseRecordsFromFrames(frames []Frame) ([]ServiceRecord, []string, error) {
 	records := []ServiceRecord{}
+	columns := []string{}
 
 	for _, frame := range frames {
 		if len(frame.Schema.Fields) == 0 || len(frame.Data.Values) == 0 {
@@ -261,6 +512,7 @@ func (s *SQLService) parseRecordsFromFrames(frames []Frame) ([]ServiceRecord, er
 		fieldIndex := make(map[string]int)
 		for i, field := range frame.Schema.Fields {
 			fieldIndex[strings.ToLower(field.Name)] = i
+			columns = append(columns, field.Name)
 		}
 
 		// Determine number of rows
@@ -272,48 +524,40 @@ func (s *SQLService) parseRecordsFromFrames(frames []Frame) ([]ServiceRecord, er
 		// Parse each row
 		for row := 0; row < numRows; row++ {
 			record := ServiceRecord{
-				AdditionalData: make(map[string]interface{}),
+				Fields: make(map[string]interface{}),
 			}
 
-			// Primary key
-			pkCol := strings.ToLower(s.settings.PrimaryKeyColumn)
-			if idx, ok := fieldIndex[pkCol]; ok && idx < len(frame.Data.Values) {
+			// ID column - strip table alias for lookup (e.g., "sc.id_cadastro" -> "id_cadastro")
+			idCol := strings.ToLower(stripTableAlias(s.settings.IdColumn))
+			if idCol == "" {
+				idCol = "id"
+			}
+			if idx, ok := fieldIndex[idCol]; ok && idx < len(frame.Data.Values) {
 				record.ID = frame.Data.Values[idx][row]
 			}
 
-			// Maintenance status
-			maintCol := strings.ToLower(s.settings.MaintenanceColumn)
+			// Maintenance status - strip table alias for lookup
+			maintCol := strings.ToLower(stripTableAlias(s.settings.MaintenanceColumn))
+			if maintCol == "" {
+				maintCol = "manutencao"
+			}
 			if idx, ok := fieldIndex[maintCol]; ok && idx < len(frame.Data.Values) {
 				record.Manutencao = toBool(frame.Data.Values[idx][row])
 			}
 
-			// Display name
-			if s.settings.DisplayNameColumn != "" {
-				nameCol := strings.ToLower(s.settings.DisplayNameColumn)
-				if idx, ok := fieldIndex[nameCol]; ok && idx < len(frame.Data.Values) {
-					record.DisplayName = toString(frame.Data.Values[idx][row])
-				}
+			// Name column - strip table alias for lookup
+			nameCol := strings.ToLower(stripTableAlias(s.settings.NameColumn))
+			if nameCol == "" {
+				nameCol = "nome"
+			}
+			if idx, ok := fieldIndex[nameCol]; ok && idx < len(frame.Data.Values) {
+				record.Nome = toString(frame.Data.Values[idx][row])
 			}
 
-			// Search value
-			if s.settings.SearchColumn != "" {
-				searchCol := strings.ToLower(s.settings.SearchColumn)
-				if idx, ok := fieldIndex[searchCol]; ok && idx < len(frame.Data.Values) {
-					record.SearchValue = frame.Data.Values[idx][row]
-				}
-			}
-
-			// Additional columns
-			if s.settings.AdditionalColumns != "" {
-				for _, col := range strings.Split(s.settings.AdditionalColumns, ",") {
-					col = strings.TrimSpace(col)
-					if col == "" {
-						continue
-					}
-					colLower := strings.ToLower(col)
-					if idx, ok := fieldIndex[colLower]; ok && idx < len(frame.Data.Values) {
-						record.AdditionalData[col] = frame.Data.Values[idx][row]
-					}
+			// All other fields
+			for i, field := range frame.Schema.Fields {
+				if i < len(frame.Data.Values) {
+					record.Fields[field.Name] = frame.Data.Values[i][row]
 				}
 			}
 
@@ -321,18 +565,76 @@ func (s *SQLService) parseRecordsFromFrames(frames []Frame) ([]ServiceRecord, er
 		}
 	}
 
-	return records, nil
+	return records, columns, nil
+}
+
+// parseAuditFromFrames converts Grafana data frames to AuditEntry slice
+func (s *SQLService) parseAuditFromFrames(frames []Frame) []AuditEntry {
+	entries := []AuditEntry{}
+
+	for _, frame := range frames {
+		if len(frame.Schema.Fields) == 0 || len(frame.Data.Values) == 0 {
+			continue
+		}
+
+		fieldIndex := make(map[string]int)
+		for i, field := range frame.Schema.Fields {
+			fieldIndex[strings.ToLower(field.Name)] = i
+		}
+
+		numRows := 0
+		if len(frame.Data.Values) > 0 {
+			numRows = len(frame.Data.Values[0])
+		}
+
+		for row := 0; row < numRows; row++ {
+			entry := AuditEntry{}
+
+			if idx, ok := fieldIndex["id"]; ok && idx < len(frame.Data.Values) {
+				entry.ID = toInt64(frame.Data.Values[idx][row])
+			}
+			if idx, ok := fieldIndex["user_login"]; ok && idx < len(frame.Data.Values) {
+				entry.UserLogin = toString(frame.Data.Values[idx][row])
+			}
+			if idx, ok := fieldIndex["user_email"]; ok && idx < len(frame.Data.Values) {
+				entry.UserEmail = toString(frame.Data.Values[idx][row])
+			}
+			if idx, ok := fieldIndex["action"]; ok && idx < len(frame.Data.Values) {
+				entry.Action = toString(frame.Data.Values[idx][row])
+			}
+			if idx, ok := fieldIndex["record_id"]; ok && idx < len(frame.Data.Values) {
+				entry.RecordID = toString(frame.Data.Values[idx][row])
+			}
+			if idx, ok := fieldIndex["record_name"]; ok && idx < len(frame.Data.Values) {
+				entry.RecordName = toString(frame.Data.Values[idx][row])
+			}
+			if idx, ok := fieldIndex["old_value"]; ok && idx < len(frame.Data.Values) {
+				entry.OldValue = toBool(frame.Data.Values[idx][row])
+			}
+			if idx, ok := fieldIndex["new_value"]; ok && idx < len(frame.Data.Values) {
+				entry.NewValue = toBool(frame.Data.Values[idx][row])
+			}
+			if idx, ok := fieldIndex["timestamp"]; ok && idx < len(frame.Data.Values) {
+				entry.Timestamp = toTime(frame.Data.Values[idx][row])
+				entry.TimestampStr = entry.Timestamp.Format("02/01/2006 15:04:05")
+			}
+
+			entries = append(entries, entry)
+		}
+	}
+
+	return entries
 }
 
 // Helper functions for type conversion
-func toInt(v interface{}) int {
+func toInt64(v interface{}) int64 {
 	switch val := v.(type) {
 	case int:
-		return val
+		return int64(val)
 	case int64:
-		return int(val)
+		return val
 	case float64:
-		return int(val)
+		return int64(val)
 	default:
 		return 0
 	}
@@ -363,5 +665,28 @@ func toBool(v interface{}) bool {
 		return val == "true" || val == "1"
 	default:
 		return false
+	}
+}
+
+func toTime(v interface{}) time.Time {
+	switch val := v.(type) {
+	case time.Time:
+		return val
+	case string:
+		t, err := time.Parse(time.RFC3339, val)
+		if err != nil {
+			t, err = time.Parse("2006-01-02T15:04:05Z", val)
+			if err != nil {
+				return time.Time{}
+			}
+		}
+		return t
+	case float64:
+		// Unix timestamp in milliseconds
+		return time.Unix(int64(val)/1000, 0)
+	case int64:
+		return time.Unix(val/1000, 0)
+	default:
+		return time.Time{}
 	}
 }

@@ -33,8 +33,11 @@ func NewApp(ctx context.Context, settings backend.AppInstanceSettings) (instance
 	}
 
 	// Set defaults for column names if not configured
-	if appSettings.PrimaryKeyColumn == "" {
-		appSettings.PrimaryKeyColumn = "id"
+	if appSettings.IdColumn == "" {
+		appSettings.IdColumn = "id"
+	}
+	if appSettings.NameColumn == "" {
+		appSettings.NameColumn = "nome"
 	}
 	if appSettings.MaintenanceColumn == "" {
 		appSettings.MaintenanceColumn = "manutencao"
@@ -42,11 +45,12 @@ func NewApp(ctx context.Context, settings backend.AppInstanceSettings) (instance
 
 	log.DefaultLogger.Info("App settings loaded",
 		"datasourceUid", appSettings.DatasourceUID,
-		"tableName", appSettings.TableName,
-		"primaryKeyColumn", appSettings.PrimaryKeyColumn,
+		"updateTable", appSettings.UpdateTable,
+		"auditTable", appSettings.AuditTable,
+		"idColumn", appSettings.IdColumn,
+		"nameColumn", appSettings.NameColumn,
 		"maintenanceColumn", appSettings.MaintenanceColumn,
-		"searchColumn", appSettings.SearchColumn,
-		"displayNameColumn", appSettings.DisplayNameColumn,
+		"hasSelectQuery", appSettings.SelectQuery != "",
 		"hasToken", appSettings.GrafanaToken != "")
 
 	app := &App{}
@@ -67,6 +71,12 @@ func NewApp(ctx context.Context, settings backend.AppInstanceSettings) (instance
 	})
 	mux.HandleFunc("/update", func(w http.ResponseWriter, r *http.Request) {
 		handleUpdate(w, r, appSettings)
+	})
+	mux.HandleFunc("/audit", func(w http.ResponseWriter, r *http.Request) {
+		handleAudit(w, r, appSettings)
+	})
+	mux.HandleFunc("/audit/export", func(w http.ResponseWriter, r *http.Request) {
+		handleAuditExport(w, r, appSettings)
 	})
 
 	app.CallResourceHandler = httpadapter.New(mux)

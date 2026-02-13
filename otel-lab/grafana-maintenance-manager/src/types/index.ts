@@ -4,13 +4,14 @@ export interface PluginSettings {
     // Connection
     datasourceUid?: string;
     grafanaUrl?: string;
-    // Table configuration
-    tableName?: string;
-    primaryKeyColumn?: string;
-    maintenanceColumn?: string;
-    searchColumn?: string;
-    displayNameColumn?: string;
-    additionalColumns?: string;
+    // Query configuration
+    selectQuery?: string;
+    updateTable?: string;
+    idColumn?: string;          // Column for search and UPDATE (e.g., "id_cadastro")
+    nameColumn?: string;        // Column that displays the name (e.g., "nome")
+    maintenanceColumn?: string; // Column to update (0/1)
+    // Audit
+    auditTable?: string;
     // Access control
     allowedOrgId?: string;
   };
@@ -27,22 +28,12 @@ export interface DatasourceInfo {
   isDefault: boolean;
 }
 
-// Table Config from API
-export interface TableConfig {
-  primaryKeyColumn: string;
-  maintenanceColumn: string;
-  searchColumn: string;
-  displayNameColumn: string;
-  additionalColumns: string[];
-}
-
 // Service Record from API (dynamic structure)
 export interface ServiceRecord {
   id: any;
-  displayName: string;
-  searchValue: any;
+  nome: string;
   manutencao: boolean;
-  additionalData?: Record<string, any>;
+  fields?: Record<string, any>;
 }
 
 // Search Request
@@ -55,7 +46,7 @@ export interface SearchRequest {
 export interface SearchResponse {
   success: boolean;
   records: ServiceRecord[];
-  config?: TableConfig;
+  columns?: string[];
   error?: string;
 }
 
@@ -63,6 +54,7 @@ export interface SearchResponse {
 export interface UpdateRequest {
   id: any;
   manutencao: boolean;
+  recordName?: string;
 }
 
 // Update Response
@@ -78,12 +70,45 @@ export interface PermissionResponse {
   currentOrgId: number;
   allowedOrgId: number;
   userLogin: string;
+  userEmail: string;
   message?: string;
 }
 
 // Config Response
 export interface ConfigResponse {
   success: boolean;
-  tableConfig?: TableConfig;
+  idColumn?: string;
+  nameColumn?: string;
+  maintenanceColumn?: string;
+  hasAuditTable?: boolean;
+  error?: string;
+}
+
+// Audit Entry
+export interface AuditEntry {
+  id: number;
+  userLogin: string;
+  userEmail: string;
+  action: string;
+  recordId: string;
+  recordName: string;
+  oldValue: boolean;
+  newValue: boolean;
+  timestamp: string;
+  timestampStr: string;
+}
+
+// Audit Request
+export interface AuditRequest {
+  recordId?: string;
+  limit?: number;
+  offset?: number;
+}
+
+// Audit Response
+export interface AuditResponse {
+  success: boolean;
+  entries: AuditEntry[];
+  total: number;
   error?: string;
 }

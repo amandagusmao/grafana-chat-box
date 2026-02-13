@@ -12,11 +12,11 @@ import {
   RadioButtonGroup,
   TextArea,
   Icon,
-  Tooltip,
-  InlineSwitch
+  Modal,
+  Tooltip
 } from '@grafana/ui';
 import { css } from '@emotion/css';
-import { ServiceRecord, PermissionResponse, SearchResponse, UpdateResponse, TableConfig } from '../types';
+import { ServiceRecord, PermissionResponse, SearchResponse, UpdateResponse, ConfigResponse, AuditEntry, AuditResponse } from '../types';
 
 interface Props extends AppRootProps {}
 
@@ -26,7 +26,14 @@ const getStyles = (theme: GrafanaTheme2) => ({
     max-width: 1400px;
   `,
   header: css`
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
     margin-bottom: ${theme.spacing(2)};
+  `,
+  headerActions: css`
+    display: flex;
+    gap: ${theme.spacing(1)};
   `,
   searchSection: css`
     background: ${theme.colors.background.secondary};
@@ -57,12 +64,6 @@ const getStyles = (theme: GrafanaTheme2) => ({
   `,
   resultsSection: css`
     margin-top: ${theme.spacing(2)};
-  `,
-  resultsHeader: css`
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    margin-bottom: ${theme.spacing(2)};
   `,
   table: css`
     width: 100%;
@@ -98,6 +99,9 @@ const getStyles = (theme: GrafanaTheme2) => ({
   actionCell: css`
     text-align: right;
     white-space: nowrap;
+    display: flex;
+    gap: ${theme.spacing(0.5)};
+    justify-content: flex-end;
   `,
   alert: css`
     margin-bottom: ${theme.spacing(2)};
@@ -125,6 +129,39 @@ const getStyles = (theme: GrafanaTheme2) => ({
     display: flex;
     gap: ${theme.spacing(1)};
     align-items: center;
+    margin-bottom: ${theme.spacing(2)};
+  `,
+  auditModal: css`
+    min-width: 800px;
+  `,
+  auditTable: css`
+    width: 100%;
+    border-collapse: collapse;
+    font-size: ${theme.typography.bodySmall.fontSize};
+    th, td {
+      padding: ${theme.spacing(1)};
+      border-bottom: 1px solid ${theme.colors.border.weak};
+      text-align: left;
+    }
+    th {
+      background: ${theme.colors.background.secondary};
+      font-weight: ${theme.typography.fontWeightMedium};
+    }
+  `,
+  auditActions: css`
+    display: flex;
+    gap: ${theme.spacing(1)};
+    margin-bottom: ${theme.spacing(2)};
+  `,
+  iconButton: css`
+    background: transparent;
+    border: none;
+    cursor: pointer;
+    padding: ${theme.spacing(0.5)};
+    border-radius: ${theme.shape.radius.default};
+    &:hover {
+      background: ${theme.colors.background.secondary};
+    }
   `,
 });
 
@@ -137,10 +174,12 @@ export const MainPage: React.FC<Props> = () => {
   const [searchText, setSearchText] = useState('');
   const [searchMode, setSearchMode] = useState<SearchMode>('id');
   const [records, setRecords] = useState<ServiceRecord[]>([]);
-  const [tableConfig, setTableConfig] = useState<TableConfig | null>(null);
   const [loading, setLoading] = useState(false);
   const [searching, setSearching] = useState(false);
   const [message, setMessage] = useState<{ type: 'success' | 'error' | 'warning'; text: string } | null>(null);
+
+  // Config state
+  const [config, setConfig] = useState<ConfigResponse | null>(null);
 
   // Permission state
   const [permission, setPermission] = useState<PermissionResponse | null>(null);
@@ -157,9 +196,28 @@ export const MainPage: React.FC<Props> = () => {
     isBulk: boolean;
   }>({ isOpen: false, record: null, newStatus: false, isBulk: false });
 
+  // Audit modal state
+  const [auditModal, setAuditModal] = useState<{
+    isOpen: boolean;
+    recordId: string | null;
+    recordName: string | null;
+  }>({ isOpen: false, recordId: null, recordName: null });
+  const [auditEntries, setAuditEntries] = useState<AuditEntry[]>([]);
+  const [loadingAudit, setLoadingAudit] = useState(false);
+
   useEffect(() => {
     checkPermission();
+    loadConfig();
   }, []);
+
+  const loadConfig = async () => {
+    try {
+      const response: ConfigResponse = await getBackendSrv().get('/api/plugins/grafana-maintenance-manager/resources/config');
+      setConfig(response);
+    } catch (error) {
+      console.error('Failed to load config:', error);
+    }
+  };
 
   const checkPermission = async () => {
     setLoadingPermission(true);
@@ -173,6 +231,7 @@ export const MainPage: React.FC<Props> = () => {
         currentOrgId: 0,
         allowedOrgId: 0,
         userLogin: '',
+        userEmail: '',
         message: 'Erro ao verificar permissões'
       });
     } finally {
@@ -180,16 +239,18 @@ export const MainPage: React.FC<Props> = () => {
     }
   };
 
-  const parseSearchValues = (text: string): string[] => {
-    // Split by comma, newline, semicolon, or space (for multiple IDs)
+  const parseSearchValues = (text: string, byName: boolean): string[] => {
+    // For name search: split only by comma, semicolon, or newline (preserve spaces in names)
+    // For ID search: split by comma, semicolon, newline, or whitespace
+    const separator = byName ? /[,;\n]+/ : /[,;\n\s]+/;
     return text
-      .split(/[,;\n\s]+/)
+      .split(separator)
       .map(v => v.trim())
       .filter(v => v.length > 0);
   };
 
   const handleSearch = async () => {
-    const values = parseSearchValues(searchText);
+    const values = parseSearchValues(searchText, searchMode === 'name');
     if (values.length === 0) {
       setMessage({ type: 'warning', text: 'Informe pelo menos um valor para buscar.' });
       return;
@@ -210,7 +271,6 @@ export const MainPage: React.FC<Props> = () => {
 
       if (response.success) {
         setRecords(response.records || []);
-        setTableConfig(response.config || null);
         if (response.records.length === 0) {
           setMessage({ type: 'warning', text: 'Nenhum registro encontrado.' });
         }
@@ -250,16 +310,16 @@ export const MainPage: React.FC<Props> = () => {
 
     try {
       if (confirmModal.isBulk) {
-        // Bulk update
         const idsToUpdate = Array.from(selectedIds);
         let successCount = 0;
         let errorCount = 0;
 
         for (const id of idsToUpdate) {
           try {
+            const record = records.find(r => r.id === id);
             const response: UpdateResponse = await getBackendSrv().post(
               '/api/plugins/grafana-maintenance-manager/resources/update',
-              { id, manutencao: confirmModal.newStatus }
+              { id, manutencao: confirmModal.newStatus, recordName: record?.nome || '' }
             );
             if (response.success) {
               successCount++;
@@ -290,10 +350,13 @@ export const MainPage: React.FC<Props> = () => {
           });
         }
       } else if (confirmModal.record) {
-        // Single update
         const response: UpdateResponse = await getBackendSrv().post(
           '/api/plugins/grafana-maintenance-manager/resources/update',
-          { id: confirmModal.record.id, manutencao: confirmModal.newStatus }
+          {
+            id: confirmModal.record.id,
+            manutencao: confirmModal.newStatus,
+            recordName: confirmModal.record.nome || ''
+          }
         );
 
         if (response.success) {
@@ -342,6 +405,56 @@ export const MainPage: React.FC<Props> = () => {
     }
   };
 
+  // Audit functions
+  const openAuditModal = async (recordId?: string, recordName?: string) => {
+    setAuditModal({
+      isOpen: true,
+      recordId: recordId || null,
+      recordName: recordName || null
+    });
+    await loadAuditEntries(recordId);
+  };
+
+  const loadAuditEntries = async (recordId?: string) => {
+    setLoadingAudit(true);
+    try {
+      const params = new URLSearchParams();
+      if (recordId) {
+        params.append('recordId', recordId);
+      }
+      params.append('limit', '100');
+
+      const response: AuditResponse = await getBackendSrv().get(
+        `/api/plugins/grafana-maintenance-manager/resources/audit?${params.toString()}`
+      );
+
+      if (response.success) {
+        setAuditEntries(response.entries || []);
+      } else {
+        setAuditEntries([]);
+        console.error('Audit error:', response.error);
+      }
+    } catch (error) {
+      console.error('Failed to load audit:', error);
+      setAuditEntries([]);
+    } finally {
+      setLoadingAudit(false);
+    }
+  };
+
+  const exportAuditCsv = () => {
+    const params = new URLSearchParams();
+    if (auditModal.recordId) {
+      params.append('recordId', auditModal.recordId);
+    }
+    window.open(`/api/plugins/grafana-maintenance-manager/resources/audit/export?${params.toString()}`, '_blank');
+  };
+
+  const closeAuditModal = () => {
+    setAuditModal({ isOpen: false, recordId: null, recordName: null });
+    setAuditEntries([]);
+  };
+
   // Stats
   const totalRecords = records.length;
   const inMaintenance = records.filter(r => r.manutencao).length;
@@ -359,6 +472,17 @@ export const MainPage: React.FC<Props> = () => {
     <div className={styles.container}>
       <div className={styles.header}>
         <h2>Gerenciador de Manutenção</h2>
+        <div className={styles.headerActions}>
+          {config?.hasAuditTable && (
+            <Button
+              variant="secondary"
+              icon="history"
+              onClick={() => openAuditModal()}
+            >
+              Auditoria Geral
+            </Button>
+          )}
+        </div>
       </div>
 
       {permission && !permission.hasPermission && (
@@ -403,8 +527,8 @@ export const MainPage: React.FC<Props> = () => {
             />
             <p className={styles.searchHelp}>
               {searchMode === 'id'
-                ? 'Exemplo: 123, 456, 789 ou um ID por linha'
-                : 'Use vírgula ou nova linha para buscar múltiplos nomes'}
+                ? 'Exemplo: 123, 456, 789 ou um ID por linha (separados por espaco, virgula ou nova linha)'
+                : 'Digite o nome completo. Use virgula ou nova linha para buscar multiplos nomes.'}
             </p>
           </div>
 
@@ -469,13 +593,9 @@ export const MainPage: React.FC<Props> = () => {
                   </th>
                 )}
                 <th>ID</th>
-                {tableConfig?.displayNameColumn && <th>Nome</th>}
-                {tableConfig?.searchColumn && <th>{tableConfig.searchColumn}</th>}
+                <th>Nome</th>
                 <th>Status</th>
-                {tableConfig?.additionalColumns?.map(col => (
-                  <th key={col}>{col}</th>
-                ))}
-                <th style={{ width: 150 }}>Ação</th>
+                <th style={{ width: 150 }}>Acoes</th>
               </tr>
             </thead>
             <tbody>
@@ -491,30 +611,38 @@ export const MainPage: React.FC<Props> = () => {
                     </td>
                   )}
                   <td>{String(record.id)}</td>
-                  {tableConfig?.displayNameColumn && <td>{record.displayName || '-'}</td>}
-                  {tableConfig?.searchColumn && <td>{String(record.searchValue ?? '-')}</td>}
+                  <td>{record.nome || '-'}</td>
                   <td>
                     <div className={styles.statusCell}>
                       <Badge
-                        text={record.manutencao ? 'Em Manutenção' : 'Normal'}
+                        text={record.manutencao ? 'Em Manutencao' : 'Normal'}
                         color={record.manutencao ? 'red' : 'green'}
                         icon={record.manutencao ? 'exclamation-triangle' : 'check'}
                       />
                     </div>
                   </td>
-                  {tableConfig?.additionalColumns?.map(col => (
-                    <td key={col}>{String(record.additionalData?.[col] ?? '-')}</td>
-                  ))}
-                  <td className={styles.actionCell}>
-                    <Button
-                      size="sm"
-                      variant={record.manutencao ? 'success' : 'destructive'}
-                      onClick={() => handleToggleMaintenance(record)}
-                      disabled={!permission?.hasPermission || loading}
-                      title={!permission?.hasPermission ? 'Sem permissão' : ''}
-                    >
-                      {record.manutencao ? 'Normalizar' : 'Manutenção'}
-                    </Button>
+                  <td>
+                    <div className={styles.actionCell}>
+                      <Button
+                        size="sm"
+                        variant={record.manutencao ? 'success' : 'destructive'}
+                        onClick={() => handleToggleMaintenance(record)}
+                        disabled={!permission?.hasPermission || loading}
+                        title={!permission?.hasPermission ? 'Sem permissao' : ''}
+                      >
+                        {record.manutencao ? 'Normalizar' : 'Manutencao'}
+                      </Button>
+                      {config?.hasAuditTable && (
+                        <Tooltip content="Ver historico">
+                          <button
+                            className={styles.iconButton}
+                            onClick={() => openAuditModal(String(record.id), record.nome)}
+                          >
+                            <Icon name="history" />
+                          </button>
+                        </Tooltip>
+                      )}
+                    </div>
                   </td>
                 </tr>
               ))}
@@ -543,7 +671,7 @@ export const MainPage: React.FC<Props> = () => {
           ) : confirmModal.record ? (
             <p>
               Deseja {confirmModal.newStatus ? 'colocar em manutenção' : 'remover da manutenção'} o registro{' '}
-              <strong>{confirmModal.record.displayName || confirmModal.record.id}</strong>?
+              <strong>{confirmModal.record.nome || confirmModal.record.id}</strong>?
             </p>
           ) : null
         }
@@ -552,6 +680,78 @@ export const MainPage: React.FC<Props> = () => {
         onConfirm={confirmToggle}
         onDismiss={() => setConfirmModal({ isOpen: false, record: null, newStatus: false, isBulk: false })}
       />
+
+      {/* Audit Modal */}
+      <Modal
+        title={auditModal.recordId
+          ? `Histórico de Alterações - ${auditModal.recordName || auditModal.recordId}`
+          : 'Histórico Geral de Alterações'}
+        isOpen={auditModal.isOpen}
+        onDismiss={closeAuditModal}
+        className={styles.auditModal}
+      >
+        <div className={styles.auditActions}>
+          <Button
+            variant="secondary"
+            icon="download-alt"
+            onClick={exportAuditCsv}
+            disabled={loadingAudit || auditEntries.length === 0}
+          >
+            Exportar CSV
+          </Button>
+          <Button
+            variant="secondary"
+            icon="sync"
+            onClick={() => loadAuditEntries(auditModal.recordId || undefined)}
+            disabled={loadingAudit}
+          >
+            Atualizar
+          </Button>
+        </div>
+
+        {loadingAudit ? (
+          <LoadingPlaceholder text="Carregando histórico..." />
+        ) : auditEntries.length === 0 ? (
+          <p>Nenhum registro de auditoria encontrado.</p>
+        ) : (
+          <table className={styles.auditTable}>
+            <thead>
+              <tr>
+                <th>Data/Hora</th>
+                <th>Usuário</th>
+                <th>Email</th>
+                <th>Ação</th>
+                {!auditModal.recordId && <th>Registro</th>}
+                <th>De</th>
+                <th>Para</th>
+              </tr>
+            </thead>
+            <tbody>
+              {auditEntries.map((entry) => (
+                <tr key={entry.id}>
+                  <td>{entry.timestampStr}</td>
+                  <td>{entry.userLogin}</td>
+                  <td>{entry.userEmail}</td>
+                  <td>{entry.action}</td>
+                  {!auditModal.recordId && <td>{entry.recordName || entry.recordId}</td>}
+                  <td>
+                    <Badge
+                      text={entry.oldValue ? 'Manutenção' : 'Normal'}
+                      color={entry.oldValue ? 'red' : 'green'}
+                    />
+                  </td>
+                  <td>
+                    <Badge
+                      text={entry.newValue ? 'Manutenção' : 'Normal'}
+                      color={entry.newValue ? 'red' : 'green'}
+                    />
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+      </Modal>
     </div>
   );
 };
